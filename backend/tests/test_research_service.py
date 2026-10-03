@@ -247,3 +247,24 @@ def test_live_quote_without_market_depth_still_waits():
     )
     assert result.can_submit_continuous_order is False
     assert result.state == "WAIT_MARKET_DEPTH"
+
+
+def test_groww_resolution_blocks_series_disagreement():
+    rows = [
+        {
+            "exchange": "NSE",
+            "segment": "CASH",
+            "trading_symbol": "NEWIPO",
+            "groww_symbol": "NSE-NEWIPO",
+            "isin": "INE123456789",
+            "series": "BE",
+        }
+    ]
+    result = GrowwInstrumentMaster.resolve_detailed(
+        rows,
+        official_symbol="NEWIPO",
+        isin="INE123456789",
+        official_series="EQ",
+    )
+    assert result.status == "BLOCK_SERIES_DISAGREEMENT"
+    assert result.row is None

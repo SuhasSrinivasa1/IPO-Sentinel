@@ -122,13 +122,16 @@ class OrderEventStore:
                     continue
                 try:
                     raw = json.loads(line)
-                    if int(raw.get("id", 0)) <= event_id:
-                        continue
-                    out.append(OrderEvent(**raw))
-                    if len(out) >= limit:
-                        break
+                    parsed_id = int(raw.get("id", 0))
+                    parsed_event = OrderEvent(**raw)
                 except Exception:
+                    parsed_event = None
+                    parsed_id = 0
+                if parsed_event is None or parsed_id <= event_id:
                     continue
+                out.append(parsed_event)
+                if len(out) >= limit:
+                    break
         return out
 
 

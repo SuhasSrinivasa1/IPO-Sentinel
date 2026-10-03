@@ -3,9 +3,11 @@ name: Build IPO Sentinel Stable
 on:
   push:
     branches:
-      - feature/ipo-listing-engine-bootstrap
+      - main
     paths:
-      - "ipo-listing-engine/**"
+      - "android/**"
+      - "backend/**"
+      - "docs/**"
       - ".github/workflows/ipo-sentinel-apk.yml"
   workflow_dispatch:
 
@@ -31,9 +33,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pip install --upgrade pip 2>&1 | tee ../../ipo-backend-validation.log
-          python -m pip install -e ".[dev]" 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pip install --upgrade pip 2>&1 | tee ../ipo-backend-validation.log
+          python -m pip install -e ".[dev]" 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Compile backend
         id: compile
@@ -41,8 +43,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m compileall -q app scripts tests 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m compileall -q app scripts tests 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Run backend tests
         id: tests
@@ -50,8 +52,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pytest -q 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pytest -q 2>&1 | tee -a ../ipo-backend-validation.log
+
+      - name: Backend lint
+        id: ruff
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cd backend
+          python -m ruff check app scripts tests 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Dependency check
         id: deps
@@ -59,8 +70,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pip check 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pip check 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Upload backend validation log
         if: always()
@@ -78,13 +89,16 @@ jobs:
           echo "install=${{ steps.install.outcome }}"
           echo "compile=${{ steps.compile.outcome }}"
           echo "tests=${{ steps.tests.outcome }}"
+          echo "ruff=${{ steps.ruff.outcome }}"
           echo "deps=${{ steps.deps.outcome }}"
           test "${{ steps.install.outcome }}" = "success"
           test "${{ steps.compile.outcome }}" = "success"
           test "${{ steps.tests.outcome }}" = "success"
+          test "${{ steps.ruff.outcome }}" = "success"
           test "${{ steps.deps.outcome }}" = "success"
 
   build-apk:
+    needs: backend-test
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -92,7 +106,7 @@ jobs:
       IPO_SENTINEL_DEVICE_KEY: ${{ secrets.IPO_SENTINEL_DEVICE_KEY }}
     defaults:
       run:
-        working-directory: ipo-listing-engine/android
+        working-directory: android
 
     steps:
       - name: Checkout
@@ -115,6 +129,15 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
+      - name: Deployment config status
+        shell: bash
+        run: |
+          if [ -n "$IPO_SENTINEL_API_URL" ] && [ -n "$IPO_SENTINEL_DEVICE_KEY" ]; then
+            echo "Trading-service configuration is injected."
+          else
+            echo "Trading-service configuration is not injected; APK will remain fail-closed for live backend operations."
+          fi
+
       - name: Android lint
         run: gradle :app:lintDebug --stacktrace
 
@@ -124,13 +147,13 @@ jobs:
       - name: Prepare artifact
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.1.0-FINAL-debug.apk
-          sha256sum release/IPO-Sentinel-v1.1.0-FINAL-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.2.0-stable-debug.apk
+          sha256sum release/IPO-Sentinel-v1.2.0-stable-debug.apk > release/SHA256SUMS.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.1.0-FINAL
-          path: ipo-listing-engine/android/release/*
+          name: IPO-Sentinel-v1.2.0-stable
+          path: android/release/*
           if-no-files-found: error
           retention-days: 30

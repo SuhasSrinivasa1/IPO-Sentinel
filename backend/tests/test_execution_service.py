@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -31,6 +31,7 @@ class FakeGroww:
             "trading_symbol": kwargs["trading_symbol"],
             "isin": "INE123456789",
             "exchange_token": "123",
+            "series": "EQ",
             "lot_size": 1,
             "buy_allowed": 1,
             "sell_allowed": 1,
@@ -74,6 +75,7 @@ def arm_execution_safety(monkeypatch, service: GrowwExecutionService) -> None:
         "symbol_resolved": True,
         "groww_resolution_status": "RESOLVED",
         "groww_exchange_token": "123",
+        "nse_series": "EQ",
     }
     plan = {"calendar_holidays": [], "calendar_ready": True}
     monkeypatch.setattr(service, "_authorized_candidate", lambda symbol, now: (candidate, plan))
@@ -272,3 +274,60 @@ def test_authorized_candidate_blocks_when_nse_identity_source_is_unavailable(mon
     monkeypatch.setattr("app.execution_service.ResearchPlanStore.load", lambda self: plan)
     with pytest.raises(RuntimeError, match="forthcoming-listing identity source"):
         service._authorized_candidate("ABC", fixed_now)
+
+
+def test_quote_older_than_30_seconds_is_stale():
+    service = GrowwExecutionService()
+    now = datetime(2026, 10, 5, 10, 1, tzinfo=IST)
+    quote = {"last_trade_time": (now - timedelta(seconds=31)).timestamp() * 1000}
+    assert service._quote_is_fresh(quote, now) is False
+
+
+def test_submit_blocks_if_authoritative_series_disagrees(monkeypatch):
+    fake = FakeGroww()
+    original = fake.get_instrument_by_exchange_and_trading_symbol
+
+    def mismatched(**kwargs):
+        row = original(**kwargs)
+        row["series"] = "BE"
+        return row
+
+    fake.get_instrument_by_exchange_and_trading_symbol = mismatched
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    with pytest.raises(RuntimeError, match="series does not exactly match"):
+        service.submit(safe_request(quantity=10))
+
+
+def test_submit_blocks_when_market_lot_is_missing(monkeypatch):
+    fake = FakeGroww()
+    original = fake.get_instrument_by_exchange_and_trading_symbol
+
+    def no_lot(**kwargs):
+        row = original(**kwargs)
+        row.pop("lot_size", None)
+        return row
+
+    fake.get_instrument_by_exchange_and_trading_symbol = no_lot
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    with pytest.raises(RuntimeError, match="market lot is missing or invalid"):
+        service.submit(safe_request(quantity=10))

@@ -45,8 +45,8 @@ class GrowwExecutionService:
     call it only after all decision, ownership, liquidity and immutable risk gates pass.
     """
 
-    TERMINAL_SUCCESS = {"EXECUTED", "COMPLETED", "DELIVERY_AWAITED"}
-    TERMINAL_FAILURE = {"REJECTED", "FAILED", "CANCELLED"}
+    TERMINAL_SUCCESS = frozenset({"EXECUTED", "COMPLETED", "DELIVERY_AWAITED"})
+    TERMINAL_FAILURE = frozenset({"REJECTED", "FAILED", "CANCELLED"})
 
     def _now(self) -> datetime:
         return datetime.now(IST)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .audit import audit_log
@@ -20,7 +20,7 @@ from .research_api import router as research_router, bind_service as bind_resear
 from .research_service import bind_research_service
 from .scheduler import ResearchScheduler
 
-app = FastAPI(title="IPO Sentinel", version="1.1.0")
+app = FastAPI(title="IPO Sentinel", version="1.2.0")
 app.include_router(connection_router)
 app.include_router(strategy_router)
 app.include_router(ops_router)
@@ -99,7 +99,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "service": "ipo-sentinel",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "shadow_capital": shadow.starting_capital,
         "live_execution": live_state_store.load().enabled,
         "calendar_ready": calendar.source_ready,
@@ -109,6 +109,11 @@ def health() -> dict:
 
 @app.get("/calendar/next-trading-day")
 def next_trading_day(after: date) -> dict:
+    if not calendar.source_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Official NSE cash-market calendar is not ready; next trading day is unavailable",
+        )
     nxt = calendar.next_trading_day(after)
     return {
         "after": after.isoformat(),

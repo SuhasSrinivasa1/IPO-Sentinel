@@ -1,5 +1,7 @@
 from datetime import date, datetime, timezone
 
+import pytest
+
 from app.domain import Action, LiveFeatures, Ownership
 from app.services import ExchangeCalendar, OwnedPositionRegistry, ShadowFill, ShadowLedger
 from app.strategy import ListingDecisionEngine
@@ -69,3 +71,9 @@ def test_mixed_same_symbol_exposure_is_not_mutable():
     assert registry.owned("ABC").quantity == 10
     assert registry.external_quantity("ABC") == 25
     assert registry.may_mutate("ABC") is False
+
+
+def test_next_trading_day_fails_closed_without_official_calendar():
+    calendar = ExchangeCalendar(source_ready=False)
+    with pytest.raises(RuntimeError, match="Official exchange holiday/session calendar"):
+        calendar.next_trading_day(date(2026, 10, 3))

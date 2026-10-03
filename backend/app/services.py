@@ -17,6 +17,7 @@ class ExchangeCalendar:
         return day.weekday() < 5 and day not in self.holidays
 
     def next_trading_day(self, after: date) -> date:
+        self.require_live_ready()
         day = after + timedelta(days=1)
         for _ in range(15):
             if self.is_trading_day(day):

@@ -712,6 +712,7 @@ class DailyResearchService:
                     if keep:
                         try:
                             restored = dict(saved)
+                            restored.setdefault("nse_series", None)
                             listing_date_value = None
                             try:
                                 listing_date_value = date.fromisoformat(str(restored.get("listing_date")))

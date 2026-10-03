@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -19,7 +19,7 @@ class AuditLog:
         return self._dir / f"{day.isoformat()}.jsonl"
 
     def append(self, event_type: str, *, severity: str = "INFO", **payload: Any) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = {
             "timestamp": now.isoformat(),
             "event_type": event_type,
@@ -35,7 +35,7 @@ class AuditLog:
 
     def export(self, days: int = 7) -> str:
         days = max(1, min(31, int(days)))
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         rows: list[str] = []
         with self._lock:
             for offset in range(days - 1, -1, -1):

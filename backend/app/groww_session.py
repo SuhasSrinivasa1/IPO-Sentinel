@@ -14,7 +14,7 @@ class GrowwCredentials:
     totp_secret: str
 
     @classmethod
-    def from_env(cls) -> "GrowwCredentials":
+    def from_env(cls) -> GrowwCredentials:
         token = os.environ.get("GROWW_TOTP_TOKEN", "").strip()
         secret = os.environ.get("GROWW_TOTP_SECRET", "").replace(" ", "").strip()
         if not token or not secret:
@@ -29,13 +29,13 @@ class GrowwSession:
         self.api = api
 
     @classmethod
-    def from_credentials(cls, credentials: GrowwCredentials) -> "GrowwSession":
+    def from_credentials(cls, credentials: GrowwCredentials) -> GrowwSession:
         current_totp = pyotp.TOTP(credentials.totp_secret).now()
         access_token = GrowwAPI.get_access_token(api_key=credentials.totp_token, totp=current_totp)
         return cls(GrowwAPI(access_token))
 
     @classmethod
-    def from_totp_env(cls) -> "GrowwSession":
+    def from_totp_env(cls) -> GrowwSession:
         return cls.from_credentials(GrowwCredentials.from_env())
 
     def historical(

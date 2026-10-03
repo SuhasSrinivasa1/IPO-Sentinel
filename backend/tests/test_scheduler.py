@@ -1,6 +1,5 @@
-from datetime import datetime
 
-from app.scheduler import IST, ResearchScheduler
+from app.scheduler import ResearchScheduler
 
 
 def test_research_scheduler_covers_weekends_and_listing_transition():

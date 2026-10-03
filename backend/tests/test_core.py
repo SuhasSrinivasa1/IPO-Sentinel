@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -29,7 +29,7 @@ def test_owned_position_is_mutable():
 def test_strong_listing_flow_can_probe_long():
     f = LiveFeatures(
         symbol="TEST",
-        at=datetime.now(timezone.utc),
+        at=datetime.now(UTC),
         ltp=110,
         vwap=106,
         rvol=3.0,

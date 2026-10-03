@@ -6,7 +6,6 @@ from typing import Any
 from .live_pnl import live_ledger
 from .order_events import order_events
 
-
 TERMINAL_FILLED = {"EXECUTED", "COMPLETED", "DELIVERY_AWAITED"}
 TERMINAL_REJECTED = {"REJECTED", "FAILED", "CANCELLED"}
 

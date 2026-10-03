@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 
@@ -50,7 +50,7 @@ class EncryptedGrowwSettingsStore:
                 "totp_secret": settings.totp_secret.replace(" ", ""),
                 "expected_static_ip": settings.expected_static_ip,
                 "static_ip_confirmed": settings.static_ip_confirmed,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             },
             separators=(",", ":"),
         ).encode("utf-8")

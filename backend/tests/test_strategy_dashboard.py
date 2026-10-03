@@ -1,6 +1,6 @@
 from app.strategy_dashboard import (
-    FamilyEvidence,
     STRATEGY_FAMILIES,
+    FamilyEvidence,
     promotion_status,
     ranking_score,
 )

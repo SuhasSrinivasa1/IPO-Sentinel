@@ -5,7 +5,7 @@ import csv
 import json
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from statistics import fmean
 from typing import Any

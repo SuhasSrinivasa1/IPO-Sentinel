@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
-from typing import Iterable, Mapping
 
 from .strategy_registry import StrategyDefinition, StrategyOutput
 

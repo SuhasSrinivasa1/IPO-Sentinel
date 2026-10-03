@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from . import research_service as research_module
 from .audit import audit_log
-
 from .connection_settings import (
     EncryptedGrowwSettingsStore,
     StoredGrowwSettings,
@@ -16,7 +16,6 @@ from .connection_settings import (
     require_device_key,
 )
 from .groww_session import GrowwCredentials, GrowwSession
-from . import research_service as research_module
 
 router = APIRouter(prefix="/settings", tags=["groww-settings"])
 store = EncryptedGrowwSettingsStore()
@@ -160,7 +159,7 @@ async def validate_connection() -> dict:
     )
 
     return {
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
         "groww_auth_ok": groww_auth_ok,
         "detected_egress_ip": detected_ip,
         "expected_static_ip": saved.expected_static_ip,

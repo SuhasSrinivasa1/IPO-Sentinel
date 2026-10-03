@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 
@@ -44,7 +44,7 @@ class LiveStateStore:
         state = LiveState(
             enabled=bool(enabled),
             budget_rupees=bounded_budget,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(UTC).isoformat(),
         )
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -144,7 +144,7 @@ class AttributableLiveLedger:
                 "reference_id": ref,
                 "cumulative_quantity": 0,
                 "average_price": 0.0,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
             state["updated_at"] = orders[oid]["updated_at"]
             self._write(state)
@@ -199,7 +199,7 @@ class AttributableLiveLedger:
                 price=delta_price,
             )
             state["charges"] = float(state.get("charges") or 0.0) + charges
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             fill = LiveFill(
                 timestamp=timestamp,
                 order_id=oid,
@@ -245,7 +245,7 @@ class AttributableLiveLedger:
                 state["positions"][ticker]["last_mark"] = price
                 changed = True
             if changed:
-                state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                state["updated_at"] = datetime.now(UTC).isoformat()
                 self._write(state)
 
     def summary(self, *, capital_base: float = 100_000.0) -> dict[str, Any]:

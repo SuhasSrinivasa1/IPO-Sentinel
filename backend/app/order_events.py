@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from .audit import audit_log
-
 
 ORDER_EVENT_TYPES = {
     "LIVE_ENABLED",
@@ -80,7 +79,7 @@ class OrderEventStore:
         with self._lock:
             event = OrderEvent(
                 id=self._next_id,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 event_type=normalized,
                 symbol=symbol.upper().strip() if symbol else None,
                 side=side.upper().strip() if side else None,

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Iterable
 
 
 @dataclass(frozen=True)

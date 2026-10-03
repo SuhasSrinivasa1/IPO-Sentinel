@@ -4,7 +4,6 @@ from zoneinfo import ZoneInfo
 from app.execution_clock import IntradayClockPolicy
 from app.position_transition import resolve_direction_transition
 
-
 IST = ZoneInfo("Asia/Kolkata")
 
 

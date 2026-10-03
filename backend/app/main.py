@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .audit import audit_log
-
 from .connection_api import router as connection_router
 from .domain import LiveFeatures
-from .post_listing_monitor import PostListingOpportunityEngine, PostListingSnapshot
 from .live_pnl import live_ledger
 from .live_state import live_state_store
 from .ops_api import router as ops_router
+from .post_listing_monitor import PostListingOpportunityEngine, PostListingSnapshot
+from .research_api import bind_service as bind_research_api
+from .research_api import router as research_router
+from .research_service import bind_research_service
+from .scheduler import ResearchScheduler
 from .services import ExchangeCalendar, OwnedPositionRegistry, ShadowLedger
 from .strategy import ListingDecisionEngine
 from .strategy_api import router as strategy_router
-from .research_api import router as research_router, bind_service as bind_research_api
-from .research_service import bind_research_service
-from .scheduler import ResearchScheduler
 
 app = FastAPI(title="IPO Sentinel", version="1.2.0")
 app.include_router(connection_router)
@@ -126,7 +126,7 @@ def next_trading_day(after: date) -> dict:
 def decision(payload: DecisionRequest) -> dict:
     features = LiveFeatures(
         symbol=payload.symbol.upper(),
-        at=datetime.now(timezone.utc),
+        at=datetime.now(UTC),
         ltp=payload.ltp,
         vwap=payload.vwap,
         rvol=payload.rvol,

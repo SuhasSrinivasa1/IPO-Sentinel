@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from threading import RLock
-from typing import Iterable
 
 from .domain import Ownership
 

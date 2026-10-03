@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as clock_time
+from datetime import date, datetime
+from datetime import time as clock_time
 from typing import Any
 
 import httpx

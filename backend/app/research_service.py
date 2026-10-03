@@ -227,6 +227,7 @@ class ResearchCandidate:
     official_issue_id: str | None
     isin: str | None
     board: str | None
+    nse_series: str | None
     is_sme: bool
     issue_status: str | None
     issue_price_text: str | None
@@ -389,9 +390,11 @@ class GrowwInstrumentMaster:
         *,
         official_symbol: str | None,
         isin: str | None,
+        official_series: str | None = None,
     ) -> GrowwResolution:
         symbol = str(official_symbol or "").upper().strip()
         official_isin = str(isin or "").upper().strip()
+        nse_series = str(official_series or "").upper().strip()
         if not symbol:
             return GrowwResolution("WAIT_NSE_IDENTITY")
 
@@ -420,6 +423,9 @@ class GrowwInstrumentMaster:
             if len(exact) > 1:
                 return GrowwResolution("BLOCK_MULTIPLE_EXACT_ROWS")
             if len(exact) == 1:
+                row_series = str(exact[0].get("series") or "").upper().strip()
+                if nse_series and row_series and row_series != nse_series:
+                    return GrowwResolution("BLOCK_SERIES_DISAGREEMENT")
                 return GrowwResolution("RESOLVED", exact[0])
             if by_isin or by_symbol:
                 return GrowwResolution("BLOCK_IDENTIFIER_DISAGREEMENT")
@@ -428,6 +434,9 @@ class GrowwInstrumentMaster:
         if len(by_symbol) > 1:
             return GrowwResolution("BLOCK_MULTIPLE_SYMBOL_ROWS")
         if len(by_symbol) == 1:
+            row_series = str(by_symbol[0].get("series") or "").upper().strip()
+            if nse_series and row_series and row_series != nse_series:
+                return GrowwResolution("BLOCK_SERIES_DISAGREEMENT")
             return GrowwResolution("RESOLVED", by_symbol[0])
         return GrowwResolution("WAIT_GROWW_INSTRUMENT")
 
@@ -437,11 +446,13 @@ class GrowwInstrumentMaster:
         *,
         official_symbol: str,
         isin: str | None,
+        official_series: str | None = None,
     ) -> dict[str, str] | None:
         return GrowwInstrumentMaster.resolve_detailed(
             instruments,
             official_symbol=official_symbol,
             isin=isin,
+            official_series=official_series,
         ).row
 
 
@@ -495,8 +506,11 @@ class DailyResearchService:
         start = _parse_date(_first(item, "issueStartDate", "startDate", "openDate", "issueOpenDate"))
         end = _parse_date(_first(item, "issueEndDate", "endDate", "closeDate", "issueCloseDate"))
         isin_raw = _first(item, "isin", "isinCode")
-        board_raw = _first(item, "series", "board", "category", "issueType")
+        series_raw = _first(item, "series")
+        board_raw = _first(item, "board", "category", "issueType", "series")
         board = str(board_raw).strip() if board_raw else None
+        nse_series = str(series_raw).upper().strip() if series_raw else None
+        board_upper = str(board or "").upper()
         multiple_raw = _first(item, "noOfTime", "subscriptionMultiple", "subscription")
         try:
             subscription_multiple = float(multiple_raw) if multiple_raw not in (None, "") else None
@@ -518,7 +532,12 @@ class DailyResearchService:
             "official_issue_id": _official_issue_id(item),
             "isin": str(isin_raw).upper().strip() if isin_raw else None,
             "board": board,
-            "is_sme": str(board or "").upper() in {"SME", "ST", "SM"},
+            "nse_series": nse_series,
+            "is_sme": (
+                board_upper in {"SM", "ST", "SME"}
+                or "SME" in board_upper
+                or "EMERGE" in board_upper
+            ),
             "issue_status": str(_first(item, "status", "issueStatus") or "").strip() or None,
             "issue_price_text": str(_first(item, "issuePrice", "priceBand") or "").strip() or None,
             "issue_size": str(_first(item, "issueSize", "noOfSharesOffered") or "").strip() or None,
@@ -577,6 +596,7 @@ class DailyResearchService:
                             instruments,
                             official_symbol=item["symbol"],
                             isin=item["isin"],
+                            official_series=item["nse_series"],
                         )
                     row = resolution.row
 
@@ -634,6 +654,7 @@ class DailyResearchService:
                             official_issue_id=item["official_issue_id"],
                             isin=item["isin"],
                             board=item["board"],
+                            nse_series=item["nse_series"],
                             is_sme=item["is_sme"],
                             issue_status=item["issue_status"],
                             issue_price_text=item["issue_price_text"],

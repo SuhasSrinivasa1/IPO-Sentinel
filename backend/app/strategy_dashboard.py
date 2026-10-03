@@ -91,9 +91,11 @@ class StrategyEvidenceStore:
         for item in raw.get("families", []):
             try:
                 evidence = FamilyEvidence(**item)
-                out[evidence.family_id] = evidence
             except Exception:
+                evidence = None
+            if evidence is None:
                 continue
+            out[evidence.family_id] = evidence
         return out
 
     def all(self) -> dict[str, FamilyEvidence]:

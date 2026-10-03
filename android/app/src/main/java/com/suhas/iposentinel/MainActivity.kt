@@ -288,7 +288,23 @@ private fun DashboardScreen(
         Text("IPO Sentinel", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Text("Listing-day + 30 trading-day intelligence • NSE", color = Muted)
 
+        val serviceProvisioned =
+            BuildConfig.IPO_SENTINEL_API_URL.startsWith("https://") &&
+                BuildConfig.IPO_SENTINEL_DEVICE_KEY.isNotBlank()
+
+        StatusCard(
+            title = "Static-IP trading service",
+            primary = if (serviceProvisioned) "PROVISIONED" else "NOT PROVISIONED",
+            secondary = if (serviceProvisioned) {
+                "APK has an HTTPS backend endpoint and device credential."
+            } else {
+                "This APK is fail-closed: research sync and live Groww execution require deployment-time backend configuration."
+            },
+            primaryColor = if (serviceProvisioned) Teal else Danger
+        )
+
         val readiness = when {
+            !serviceProvisioned -> "LOCKED"
             validation?.liveExecutionReady == true -> "READY"
             growwConfigured -> "NEEDS VALIDATION"
             else -> "NOT CONFIGURED"
@@ -298,6 +314,8 @@ private fun DashboardScreen(
             title = "Groww API + Static IP",
             primary = readiness,
             secondary = when {
+                !serviceProvisioned ->
+                    "Trading service must be provisioned before Groww settings can be used."
                 validation?.liveExecutionReady == true ->
                     "Groww authentication and static-IP checks passed"
                 growwConfigured ->
@@ -305,7 +323,11 @@ private fun DashboardScreen(
                 else ->
                     "Add Groww TOTP token, secret and whitelisted static IP in Settings"
             },
-            primaryColor = if (validation?.liveExecutionReady == true) Teal else Amber
+            primaryColor = when {
+                !serviceProvisioned -> Danger
+                validation?.liveExecutionReady == true -> Teal
+                else -> Amber
+            }
         )
 
         val nextDay = researchPlan?.nextTradingDay
@@ -319,12 +341,14 @@ private fun DashboardScreen(
         StatusCard(
             title = "Daily research plan",
             primary = when {
+                !serviceProvisioned -> "BACKEND NOT PROVISIONED"
                 researchPlan == null -> "NOT SYNCED"
                 researchFailed -> "RESEARCH SERVICE FAILED"
                 researchPlan.researchHealth == "DEGRADED" -> "DEGRADED"
                 else -> "HEALTHY"
             },
             secondary = when {
+                !serviceProvisioned -> "Automatic NSE/Groww research requires the static-IP backend service."
                 researchPlan == null -> "Waiting for the backend research snapshot"
                 researchFailed -> researchPlan.errors.joinToString(" • ").ifBlank {
                     "Official IPO source is unavailable; live execution remains blocked."
@@ -404,6 +428,7 @@ private fun DashboardScreen(
                                 )
                                 Text(
                                     candidate.lifecycleState +
+                                        (candidate.nseSeries?.let { " • NSE " + it } ?: "") +
                                         (candidate.isin?.let { " • ISIN " + it } ?: ""),
                                     color = Muted,
                                     fontSize = 10.sp

@@ -600,8 +600,8 @@ class DailyResearchService:
                         )
                     row = resolution.row
 
-                    def allowed(name: str) -> bool:
-                        return str((row or {}).get(name) or "").strip().lower() in {"1", "true", "yes"}
+                    def allowed(name: str, instrument_row: dict[str, str] | None = row) -> bool:
+                        return str((instrument_row or {}).get(name) or "").strip().lower() in {"1", "true", "yes"}
 
                     trading_day_no: int | None = None
                     if item["listing_date"] and self.calendar.source_ready and item["listing_date"] <= now.date():

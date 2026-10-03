@@ -80,7 +80,7 @@ class GrowwExecutionService:
         return 0.0
 
     @staticmethod
-    def _quote_is_fresh(quote: Any, now: datetime, *, max_age_seconds: float = 120.0) -> bool:
+    def _quote_is_fresh(quote: Any, now: datetime, *, max_age_seconds: float = 30.0) -> bool:
         if not isinstance(quote, dict):
             return False
         source = quote.get("payload") if isinstance(quote.get("payload"), dict) else quote
@@ -205,9 +205,18 @@ class GrowwExecutionService:
         if official_isin and groww_isin != official_isin:
             raise RuntimeError("Groww ISIN does not exactly match the authoritative NSE identity")
 
+        official_series = str(candidate.get("nse_series") or "").upper().strip()
+        groww_series = str(instrument.get("series") or "").upper().strip()
+        if official_series and not groww_series:
+            raise RuntimeError("Groww series is missing for an NSE identity that specifies series")
+        if official_series and groww_series != official_series:
+            raise RuntimeError("Groww series does not exactly match the authoritative NSE identity")
+
         expected_token = str(candidate.get("groww_exchange_token") or "").strip()
         current_token = str(instrument.get("exchange_token") or "").strip()
-        if expected_token and current_token and expected_token != current_token:
+        if not expected_token or not current_token:
+            raise RuntimeError("Valid Groww exchange token is required for execution")
+        if expected_token != current_token:
             raise RuntimeError("Groww exchange token changed since instrument resolution")
 
         quote = groww.get_quote(
@@ -251,7 +260,12 @@ class GrowwExecutionService:
         instrument, quote, live_price = self._instrument_and_price(groww, symbol, candidate, now)
         depth_available = self._quote_has_depth(quote)
 
-        lot_size = max(1, int(float(instrument.get("lot_size") or 1)))
+        try:
+            lot_size = int(float(instrument.get("lot_size")))
+        except (TypeError, ValueError):
+            lot_size = 0
+        if lot_size <= 0:
+            raise RuntimeError("Groww market lot is missing or invalid; execution remains blocked")
         if request.quantity % lot_size != 0:
             raise RuntimeError(
                 f"Order quantity {request.quantity} is not a multiple of Groww market lot {lot_size}"

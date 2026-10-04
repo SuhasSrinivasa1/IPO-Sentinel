@@ -1466,7 +1466,7 @@ private fun GrowwSettingsScreen(
         }
 
         Text(
-            "Security: Groww TOTP/API credentials are encrypted with Android Keystore and are never repopulated into the UI. IPO Sentinel uses fixed HTTPS endpoints for Groww and official market data; there is no server URL, device ID or device key to configure.",
+            "Security: Groww TOTP/API credentials are encrypted with Android Keystore and are never repopulated into the UI. Broker and official-market connections use fixed HTTPS endpoints; no extra service configuration is required.",
             color = Muted,
             fontSize = 12.sp
         )

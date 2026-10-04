@@ -937,7 +937,7 @@ private fun ResearchScreen(
                             Column(Modifier.weight(1f)) {
                                 Text(call.symbol + " • " + call.direction, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    call.quantity + " units • ₹" + String.format(Locale.US, "%.2f", call.entryPrice) +
+                                    call.quantity.toString() + " units • ₹" + String.format(Locale.US, "%.2f", call.entryPrice) +
                                         " → ₹" + String.format(Locale.US, "%.2f", call.exitPrice),
                                     color = Muted,
                                     fontSize = 10.sp

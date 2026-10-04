@@ -83,9 +83,6 @@ jobs:
     needs: backend-test
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    env:
-      IPO_SENTINEL_API_URL: ${{ secrets.IPO_SENTINEL_API_URL }}
-      IPO_SENTINEL_DEVICE_KEY: ${{ secrets.IPO_SENTINEL_DEVICE_KEY }}
     defaults:
       run:
         working-directory: android
@@ -117,16 +114,27 @@ jobs:
       - name: Build stable debug APK
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Verify direct-auth architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n -E 'IPO_SENTINEL_API_URL|IPO_SENTINEL_DEVICE_KEY|X-IPO-Sentinel-Device-Key|Trading Service|trading-service endpoint' app/src app/build.gradle.kts; then
+            echo "Legacy trading-service configuration remains in Android source."
+            exit 1
+          fi
+          grep -R -n 'https://api.groww.in' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
+          grep -R -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
+
       - name: Prepare artifact
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.2.1-INSTALL-FIX-debug.apk
-          sha256sum release/IPO-Sentinel-v1.2.1-INSTALL-FIX-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.0-DIRECT-debug.apk
+          sha256sum release/IPO-Sentinel-v1.3.0-DIRECT-debug.apk > release/SHA256SUMS.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.2.1-INSTALL-FIX
+          name: IPO-Sentinel-v1.3.0-DIRECT
           path: android/release/*
           if-no-files-found: error
           retention-days: 30

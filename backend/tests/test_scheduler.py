@@ -9,7 +9,13 @@ def test_research_scheduler_covers_weekends_and_listing_transition():
     def job(**kwargs):
         calls.append(kwargs)
 
-    scheduler = ResearchScheduler(job).build()
+    scheduler = ResearchScheduler(
+        job,
+        market_scan_job=job,
+        daily_review_job=lambda: None,
+        weekly_review_job=lambda: None,
+        order_monitor_job=lambda: None,
+    ).build()
     jobs = {item.id: item for item in scheduler.get_jobs()}
 
     assert "ipo_research_after_market" in jobs
@@ -19,6 +25,10 @@ def test_research_scheduler_covers_weekends_and_listing_transition():
     for minute in (0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50):
         assert f"ipo_listing_recheck_10{minute:02d}" in jobs
     assert "ipo_listing_recheck_1100" in jobs
+    assert "ipo_market_scan_each_minute" in jobs
+    assert "ipo_daily_learning_review" in jobs
+    assert "ipo_weekly_strategy_review" in jobs
+    assert "ipo_order_position_monitor_30s" in jobs
 
     # The after-market trigger intentionally has no weekday restriction,
     # so Saturday/Sunday refreshes still build the next-week plan.

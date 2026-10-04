@@ -188,7 +188,7 @@ def test_submit_blocks_fresh_short_without_shortability(monkeypatch):
 
 def test_submit_blocks_when_depth_is_missing(monkeypatch):
     fake = FakeGroww()
-    fake.get_quote = lambda **kwargs: {"last_price": 100.0, "last_trade_time": 1791174660000}
+    fake.get_quote = lambda **kwargs: {"last_price": 100.0, "last_trade_time": 1791174960000}
     monkeypatch.setattr(
         "app.execution_service.live_state_store.load",
         lambda: LiveState(enabled=True, budget_rupees=100_000),

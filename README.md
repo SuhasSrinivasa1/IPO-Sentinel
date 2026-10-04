@@ -1,13 +1,13 @@
 # IPO Sentinel
 
 
-## Current source baseline — v1.3.0 direct mode
+## Current source baseline — v1.3.1 direct research mode
 
-The current Android build is **v1.3.0** and uses direct device-side Groww authentication. The app stores the Groww TOTP token/API key and TOTP secret using Android Keystore-backed encryption, generates the TOTP locally, and talks to Groww over a fixed HTTPS API endpoint. There is no user-entered trading-service URL, device ID, or device key in the v1.3.0 Android flow. Cleartext HTTP is disabled in the Android manifest.
+The current Android build is **v1.3.1** and uses direct device-side Groww authentication. The app stores the Groww TOTP token/API key and TOTP secret using Android Keystore-backed encryption, generates the TOTP locally, and talks to Groww over a fixed HTTPS API endpoint. There is no user-entered trading-service URL, device ID, or device key in the v1.3.0 Android flow. Cleartext HTTP is disabled in the Android manifest.
 
-The repository still contains the earlier Python backend and Android `BackendApi` implementation as historical/research source. In the direct Android build, the legacy remote request path is disabled; broker authentication is handled by `DirectGrowwClient`. Older release notes below describe the evolution of the project and should not be read as the current v1.3.0 connectivity contract.
+The repository still contains the earlier Python backend and Android `BackendApi` implementation as historical/research source. In the direct Android build, the legacy remote request path is disabled; broker authentication is handled by `DirectGrowwClient`, while IPO discovery/calendar/symbol resolution is handled by `DirectResearchClient` directly on the phone. Older release notes below describe the evolution of the project and should not be read as the current v1.3.0 connectivity contract.
 
-Current Android package for the install-fix line: `com.suhas.iposentinel.installfix`. The GitHub workflow builds `IPO-Sentinel-v1.3.0-DIRECT-debug.apk` and includes a source-level gate that rejects legacy endpoint/device-key configuration in the Android client.
+Current Android package for the install-fix line: `com.suhas.iposentinel.installfix`. v1.3.1 keeps automatic order placement disabled while the direct-device execution/reconciliation layer remains unimplemented; research and broker validation work independently of the retired remote service. The GitHub workflow builds `IPO-Sentinel-v1.3.0-DIRECT-debug.apk` and includes a source-level gate that rejects legacy endpoint/device-key configuration in the Android client.
 
 
 IPO Sentinel is an isolated Android + backend project for research, shadow trading, and eventually controlled execution around newly listed NSE cash equities.

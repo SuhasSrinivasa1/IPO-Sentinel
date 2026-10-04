@@ -32,6 +32,8 @@ class FakeGroww:
             "isin": "INE123456789",
             "exchange_token": "123",
             "lot_size": 1,
+            "tick_size": 0.05,
+            "freeze_quantity": 1000,
             "buy_allowed": 1,
             "sell_allowed": 1,
         }
@@ -39,7 +41,7 @@ class FakeGroww:
     def get_quote(self, **kwargs):
         return {
             "last_price": 100.0,
-            "last_trade_time": 1791174660000,
+            "last_trade_time": 1791174960000,
             "depth": {
                 "buy": [{"price": 99.9, "quantity": 1000}],
                 "sell": [{"price": 100.1, "quantity": 1000}],
@@ -63,7 +65,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 def arm_execution_safety(monkeypatch, service: GrowwExecutionService) -> None:
-    fixed_now = datetime(2026, 10, 5, 10, 1, tzinfo=IST)
+    fixed_now = datetime(2026, 10, 5, 10, 6, tzinfo=IST)
     monkeypatch.setattr(service, "_now", lambda: fixed_now)
     monkeypatch.setattr(service, "_require_current_static_ip", lambda: None)
     candidate = {
@@ -272,3 +274,146 @@ def test_authorized_candidate_blocks_when_nse_identity_source_is_unavailable(mon
     monkeypatch.setattr("app.execution_service.ResearchPlanStore.load", lambda self: plan)
     with pytest.raises(RuntimeError, match="forthcoming-listing identity source"):
         service._authorized_candidate("ABC", fixed_now)
+
+
+def test_submit_blocks_live_spread_even_if_upstream_estimate_is_optimistic(monkeypatch):
+    fake = FakeGroww()
+    fake.get_quote = lambda **kwargs: {
+        "last_price": 100.0,
+        "last_trade_time": 1791174960000,
+        "bid_price": 99.0,
+        "offer_price": 101.0,
+        "depth": {
+            "buy": [{"price": 99.0, "quantity": 1000}],
+            "sell": [{"price": 101.0, "quantity": 1000}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    with pytest.raises(RuntimeError, match="SPREAD"):
+        service.submit(safe_request(quantity=10, budget_price=100.0))
+
+
+def test_submit_blocks_quantity_above_freeze_limit(monkeypatch):
+    fake = FakeGroww()
+    original = fake.get_instrument_by_exchange_and_trading_symbol
+    def frozen(**kwargs):
+        row = original(**kwargs)
+        row["freeze_quantity"] = 5
+        return row
+    fake.get_instrument_by_exchange_and_trading_symbol = frozen
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    with pytest.raises(RuntimeError, match="freeze quantity"):
+        service.submit(safe_request(quantity=10, budget_price=100.0))
+
+
+def test_submit_blocks_tick_misaligned_limit_price(monkeypatch):
+    fake = FakeGroww()
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    with pytest.raises(RuntimeError, match="tick size"):
+        service.submit(safe_request(quantity=10, budget_price=100.03))
+
+
+def test_listing_day_blocks_market_entry_during_first_five_minutes(monkeypatch):
+    fake = FakeGroww()
+    fake.get_quote = lambda **kwargs: {
+        "last_price": 100.0,
+        "last_trade_time": 1791174660000,
+        "depth": {
+            "buy": [{"price": 99.9, "quantity": 1000}],
+            "sell": [{"price": 100.1, "quantity": 1000}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    fixed_now = datetime(2026, 10, 5, 10, 1, tzinfo=IST)
+    monkeypatch.setattr(service, "_now", lambda: fixed_now)
+    monkeypatch.setattr(service, "_require_current_static_ip", lambda: None)
+    candidate = {
+        "symbol": "ABC",
+        "isin": "INE123456789",
+        "listing_date": "2026-10-05",
+        "nse_listing_confirmed": True,
+        "symbol_resolved": True,
+        "groww_resolution_status": "RESOLVED",
+        "groww_exchange_token": "123",
+    }
+    plan = {"calendar_holidays": [], "calendar_ready": True}
+    monkeypatch.setattr(service, "_authorized_candidate", lambda symbol, now: (candidate, plan))
+    with pytest.raises(RuntimeError, match="OPENING_STABILIZATION"):
+        service.submit(safe_request(quantity=10))
+
+
+def test_listing_day_rejects_quote_older_than_fifteen_seconds(monkeypatch):
+    fake = FakeGroww()
+    fake.get_quote = lambda **kwargs: {
+        "last_price": 100.0,
+        "last_trade_time": 1791174630000,
+        "depth": {
+            "buy": [{"price": 99.9, "quantity": 1000}],
+            "sell": [{"price": 100.1, "quantity": 1000}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    service = GrowwExecutionService()
+    fixed_now = datetime(2026, 10, 5, 10, 1, tzinfo=IST)
+    monkeypatch.setattr(service, "_now", lambda: fixed_now)
+    monkeypatch.setattr(service, "_require_current_static_ip", lambda: None)
+    candidate = {
+        "symbol": "ABC",
+        "isin": "INE123456789",
+        "listing_date": "2026-10-05",
+        "nse_listing_confirmed": True,
+        "symbol_resolved": True,
+        "groww_resolution_status": "RESOLVED",
+        "groww_exchange_token": "123",
+    }
+    plan = {"calendar_holidays": [], "calendar_ready": True}
+    monkeypatch.setattr(service, "_authorized_candidate", lambda symbol, now: (candidate, plan))
+    with pytest.raises(RuntimeError, match="sufficiently fresh"):
+        service.submit(safe_request(quantity=10, budget_price=100.0))

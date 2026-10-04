@@ -148,3 +148,17 @@ This release freezes the automated IPO-discovery and listing-day identity workfl
 - Groww instrument metadata is rechecked for exchange token, series, lot size, tick size, freeze quantity, buy/sell permission and live availability.
 - Listing-day auto execution is disabled during NSE special pre-open. The engine may observe 09:00-10:00, but continuous-market orders are not eligible before 10:00 IST and still require fresh quote, market depth, liquidity, spread, impact, circuit, position and order-state gates.
 - The dashboard exposes daily research health, next-trading-day candidates, next-week candidates, NSE identity confirmation and Groww resolution state.
+
+
+## Trader-audit hardening release (v1.1.1)
+
+This release keeps the v1.1.0 autonomous IPO research and exact-identity workflow and adds execution hardening based on a listing-day trader audit:
+
+- Fast NSE/Groww identity rechecks continue through 11:00 IST so delayed broker instrument publication does not leave the listing watch stale after 10:15.
+- Listing-day live quotes must have a last trade no older than 15 seconds; D2-D30 execution uses a 30-second maximum.
+- The order gateway independently derives the live spread from Groww bid/offer/depth and uses the more conservative value when an upstream strategy also supplies a spread estimate.
+- The gateway estimates requested-quantity book impact from the live opposing depth and blocks when visible depth cannot absorb the order or estimated impact is excessive.
+- Groww freeze quantity and tick size are enforced before submission.
+- Unknown product strings are rejected instead of silently falling back to CNC.
+- During 10:00-10:05 on listing day, new MARKET entries are blocked; price-controlled orders may proceed only if all identity, quote, depth, liquidity, spread, impact, circuit, reconciliation, position-isolation and budget gates pass.
+- The displayed 09:00-09:45 special-pre-open rule now matches the execution policy: IPO Sentinel observes that phase and does not auto-submit continuous-market orders.

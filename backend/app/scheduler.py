@@ -60,18 +60,22 @@ class ResearchScheduler:
         # Groww can publish a newly-listed CASH instrument a few minutes after the
         # exchange session transitions. Recheck repeatedly instead of assuming 10:00
         # availability. The execution gate still remains closed until an exact match exists.
-        for minute in (0, 1, 2, 3, 5, 10, 15):
-            scheduler.add_job(
-                lambda: self.research_job(trigger="continuous_open_recheck"),
-                trigger="cron",
-                day_of_week="mon-fri",
-                hour=10,
-                minute=minute,
-                id=f"ipo_listing_recheck_10{minute:02d}",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
+        for hour, minutes in (
+            (10, (0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50)),
+            (11, (0,)),
+        ):
+            for minute in minutes:
+                scheduler.add_job(
+                    lambda: self.research_job(trigger="continuous_open_recheck"),
+                    trigger="cron",
+                    day_of_week="mon-fri",
+                    hour=hour,
+                    minute=minute,
+                    id=f"ipo_listing_recheck_{hour:02d}{minute:02d}",
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
         return scheduler
 
 

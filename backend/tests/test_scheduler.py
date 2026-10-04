@@ -16,8 +16,9 @@ def test_research_scheduler_covers_weekends_and_listing_transition():
     assert "ipo_research_pre_market" in jobs
     for minute in (0, 35, 46, 58):
         assert f"ipo_listing_recheck_09{minute:02d}" in jobs
-    for minute in (0, 1, 2, 3, 5, 10, 15):
+    for minute in (0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50):
         assert f"ipo_listing_recheck_10{minute:02d}" in jobs
+    assert "ipo_listing_recheck_1100" in jobs
 
     # The after-market trigger intentionally has no weekday restriction,
     # so Saturday/Sunday refreshes still build the next-week plan.

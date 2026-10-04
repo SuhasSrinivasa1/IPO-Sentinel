@@ -80,7 +80,7 @@ class GrowwExecutionService:
         return 0.0
 
     @staticmethod
-    def _quote_is_fresh(quote: Any, now: datetime, *, max_age_seconds: float = 120.0) -> bool:
+    def _quote_is_fresh(quote: Any, now: datetime, *, max_age_seconds: float = 30.0) -> bool:
         if not isinstance(quote, dict):
             return False
         source = quote.get("payload") if isinstance(quote.get("payload"), dict) else quote
@@ -112,6 +112,116 @@ class GrowwExecutionService:
             return float(buy_total or 0) > 0 and float(sell_total or 0) > 0
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _quote_source(quote: Any) -> dict[str, Any]:
+        if not isinstance(quote, dict):
+            return {}
+        payload = quote.get("payload")
+        return payload if isinstance(payload, dict) else quote
+
+    @classmethod
+    def _best_bid_ask(cls, quote: Any) -> tuple[float, float] | None:
+        source = cls._quote_source(quote)
+        try:
+            bid = float(source.get("bid_price") or 0)
+            ask = float(source.get("offer_price") or 0)
+        except (TypeError, ValueError):
+            bid = 0.0
+            ask = 0.0
+
+        depth = source.get("depth") or source.get("market_depth")
+        if isinstance(depth, dict):
+            bids = depth.get("buy") or depth.get("bids") or depth.get("buy_depth")
+            asks = depth.get("sell") or depth.get("asks") or depth.get("sell_depth")
+            if bid <= 0 and isinstance(bids, list) and bids and isinstance(bids[0], dict):
+                try:
+                    bid = float(bids[0].get("price") or 0)
+                except (TypeError, ValueError):
+                    bid = 0.0
+            if ask <= 0 and isinstance(asks, list) and asks and isinstance(asks[0], dict):
+                try:
+                    ask = float(asks[0].get("price") or 0)
+                except (TypeError, ValueError):
+                    ask = 0.0
+
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        return bid, ask
+
+    @classmethod
+    def _live_spread_bps(cls, quote: Any) -> float | None:
+        best = cls._best_bid_ask(quote)
+        if best is None:
+            return None
+        bid, ask = best
+        midpoint = (bid + ask) / 2.0
+        if midpoint <= 0:
+            return None
+        return ((ask - bid) / midpoint) * 10_000.0
+
+    @classmethod
+    def _depth_impact_bps(
+        cls,
+        quote: Any,
+        *,
+        side: str,
+        quantity: int,
+    ) -> float | None:
+        if quantity <= 0:
+            return None
+        source = cls._quote_source(quote)
+        depth = source.get("depth") or source.get("market_depth")
+        if not isinstance(depth, dict):
+            return None
+        normalized_side = side.upper().strip()
+        levels = (
+            depth.get("sell") or depth.get("asks") or depth.get("sell_depth")
+            if normalized_side == "BUY"
+            else depth.get("buy") or depth.get("bids") or depth.get("buy_depth")
+        )
+        if not isinstance(levels, list) or not levels:
+            return None
+
+        parsed: list[tuple[float, int]] = []
+        for level in levels:
+            if not isinstance(level, dict):
+                continue
+            try:
+                price = float(level.get("price") or 0)
+                qty = int(float(level.get("quantity") or 0))
+            except (TypeError, ValueError):
+                continue
+            if price > 0 and qty > 0:
+                parsed.append((price, qty))
+        if not parsed:
+            return None
+
+        parsed.sort(key=lambda item: item[0], reverse=normalized_side != "BUY")
+        best_price = parsed[0][0]
+        remaining = quantity
+        notional = 0.0
+        filled = 0
+        for price, available in parsed:
+            take = min(remaining, available)
+            notional += price * take
+            filled += take
+            remaining -= take
+            if remaining <= 0:
+                break
+        if remaining > 0 or filled <= 0 or best_price <= 0:
+            return None
+        average = notional / filled
+        if normalized_side == "BUY":
+            return max(0.0, ((average - best_price) / best_price) * 10_000.0)
+        return max(0.0, ((best_price - average) / best_price) * 10_000.0)
+
+    @staticmethod
+    def _tick_aligned(price: float, tick_size: float) -> bool:
+        if tick_size <= 0:
+            return True
+        units = price / tick_size
+        return abs(units - round(units)) <= 1e-6
 
     @staticmethod
     def _require_current_static_ip() -> None:
@@ -186,6 +296,8 @@ class GrowwExecutionService:
         symbol: str,
         candidate: dict[str, Any],
         now: datetime,
+        *,
+        max_quote_age_seconds: float,
     ) -> tuple[dict[str, Any], dict[str, Any], float]:
         instrument = groww.get_instrument_by_exchange_and_trading_symbol(
             exchange=groww.EXCHANGE_NSE,
@@ -217,8 +329,12 @@ class GrowwExecutionService:
         )
         if not isinstance(quote, dict):
             raise RuntimeError("Fresh Groww quote is unavailable")
-        if not self._quote_is_fresh(quote, now):
-            raise RuntimeError("Groww quote is missing a fresh last_trade_time")
+        if not self._quote_is_fresh(
+            quote,
+            now,
+            max_age_seconds=max_quote_age_seconds,
+        ):
+            raise RuntimeError("Groww quote is missing a sufficiently fresh last_trade_time")
         ltp = self._extract_ltp(quote)
         if ltp <= 0:
             raise RuntimeError("Positive live Groww price is unavailable")
@@ -236,6 +352,20 @@ class GrowwExecutionService:
         if side not in {"BUY", "SELL"}:
             raise ValueError("Side must be BUY or SELL")
 
+        product_name = request.product.upper().strip()
+        if product_name not in {"CNC", "MIS"}:
+            raise ValueError("Product must be CNC or MIS")
+
+        order_type_name = request.order_type.upper().strip()
+        if order_type_name not in {"MARKET", "LIMIT", "SL", "SL_M"}:
+            raise ValueError("Unsupported order type")
+        if order_type_name == "LIMIT" and (request.price is None or request.price <= 0):
+            raise ValueError("LIMIT orders require a positive price")
+        if order_type_name in {"SL", "SL_M"} and (
+            request.trigger_price is None or request.trigger_price <= 0
+        ):
+            raise ValueError("Stop-loss orders require a positive trigger price")
+
         now = self._now()
         self._require_current_static_ip()
         candidate, plan = self._authorized_candidate(symbol, now)
@@ -248,13 +378,67 @@ class GrowwExecutionService:
             raise RuntimeError("Security has not reached its official listing date")
 
         groww = self._session().api
-        instrument, quote, live_price = self._instrument_and_price(groww, symbol, candidate, now)
+        max_quote_age_seconds = 15.0 if now.date() == listing_date else 30.0
+        instrument, quote, live_price = self._instrument_and_price(
+            groww,
+            symbol,
+            candidate,
+            now,
+            max_quote_age_seconds=max_quote_age_seconds,
+        )
         depth_available = self._quote_has_depth(quote)
+        live_spread_bps = self._live_spread_bps(quote)
+        if live_spread_bps is None:
+            raise RuntimeError("WAIT_SPREAD_UNKNOWN: live Groww bid/offer is unavailable")
+        book_impact_bps = self._depth_impact_bps(
+            quote,
+            side=side,
+            quantity=request.quantity,
+        )
+        if book_impact_bps is None:
+            raise RuntimeError("WAIT_IMPACT_UNKNOWN: live book cannot absorb the requested quantity")
+
+        upstream_spread = (
+            request.spread_bps
+            if request.spread_bps is not None and request.spread_bps >= 0
+            else 0.0
+        )
+        upstream_impact = (
+            request.estimated_impact_bps
+            if request.estimated_impact_bps is not None and request.estimated_impact_bps >= 0
+            else 0.0
+        )
+        effective_spread_bps = max(live_spread_bps, upstream_spread)
+        effective_impact_bps = max(book_impact_bps, upstream_impact)
 
         lot_size = max(1, int(float(instrument.get("lot_size") or 1)))
         if request.quantity % lot_size != 0:
             raise RuntimeError(
                 f"Order quantity {request.quantity} is not a multiple of Groww market lot {lot_size}"
+            )
+
+        try:
+            freeze_quantity = int(float(instrument.get("freeze_quantity") or 0))
+        except (TypeError, ValueError):
+            freeze_quantity = 0
+        if freeze_quantity > 0 and request.quantity > freeze_quantity:
+            raise RuntimeError(
+                f"Order quantity {request.quantity} exceeds Groww freeze quantity {freeze_quantity}"
+            )
+
+        try:
+            tick_size = float(instrument.get("tick_size") or 0)
+        except (TypeError, ValueError):
+            tick_size = 0.0
+        if request.price is not None and request.price > 0 and not self._tick_aligned(request.price, tick_size):
+            raise RuntimeError(f"Order price {request.price} is not aligned to tick size {tick_size}")
+        if (
+            request.trigger_price is not None
+            and request.trigger_price > 0
+            and not self._tick_aligned(request.trigger_price, tick_size)
+        ):
+            raise RuntimeError(
+                f"Trigger price {request.trigger_price} is not aligned to tick size {tick_size}"
             )
 
         buy_allowed = str(instrument.get("buy_allowed") or "").strip().lower() in {"1", "true", "yes"}
@@ -263,7 +447,7 @@ class GrowwExecutionService:
             raise RuntimeError("Groww currently marks buying as unavailable for this instrument")
         if side == "SELL" and not sell_allowed:
             raise RuntimeError("Groww currently marks selling as unavailable for this instrument")
-        fresh_short = side == "SELL" and request.product.upper() == "MIS" and not request.is_exit
+        fresh_short = side == "SELL" and product_name == "MIS" and not request.is_exit
         if fresh_short and not request.shortable:
             raise RuntimeError("Fresh intraday short is not confirmed eligible")
 
@@ -271,6 +455,16 @@ class GrowwExecutionService:
         trading_day = self._trading_day_number(listing_date, now.date(), holidays)
         if trading_day <= 0 or trading_day > 30:
             raise RuntimeError("Candidate is outside the D1-D30 execution universe")
+
+        if (
+            now.date() == listing_date
+            and clock_time(10, 0) <= now.time() < clock_time(10, 5)
+            and order_type_name == "MARKET"
+            and not request.is_exit
+        ):
+            raise RuntimeError(
+                "WAIT_OPENING_STABILIZATION: use a price-controlled order during the first five minutes"
+            )
 
         if now.date() == listing_date:
             session = listing_session_gate(
@@ -281,8 +475,8 @@ class GrowwExecutionService:
                 live_quote_available=True,
                 market_depth_available=depth_available,
                 liquidity_sufficient=request.liquidity_sufficient,
-                spread_bps=request.spread_bps,
-                estimated_impact_bps=request.estimated_impact_bps,
+                spread_bps=effective_spread_bps,
+                estimated_impact_bps=effective_impact_bps,
                 circuit_state_acceptable=request.circuit_state_acceptable,
                 position_reconciled=request.position_reconciled,
                 order_state_known=request.order_state_known,
@@ -304,14 +498,10 @@ class GrowwExecutionService:
                 raise RuntimeError("WAIT_MARKET_DEPTH: usable live market depth is unavailable")
             if not request.liquidity_sufficient:
                 raise RuntimeError("WAIT_LIQUIDITY: liquidity gate has not passed")
-            if request.spread_bps is None or request.spread_bps < 0 or request.spread_bps > 85.0:
-                raise RuntimeError("WAIT_SPREAD: measured spread is unavailable or too wide")
-            if (
-                request.estimated_impact_bps is None
-                or request.estimated_impact_bps < 0
-                or request.estimated_impact_bps > 75.0
-            ):
-                raise RuntimeError("WAIT_IMPACT: estimated market impact is unavailable or too high")
+            if effective_spread_bps > 85.0:
+                raise RuntimeError("WAIT_SPREAD: live spread is too wide")
+            if effective_impact_bps > 75.0:
+                raise RuntimeError("WAIT_IMPACT: live-book market impact is too high")
             if not request.circuit_state_acceptable:
                 raise RuntimeError("WAIT_CIRCUIT_STATE: circuit state has not passed")
             if not request.position_reconciled:
@@ -339,7 +529,7 @@ class GrowwExecutionService:
         )
 
         product = (
-            groww.PRODUCT_MIS if request.product.upper() == "MIS"
+            groww.PRODUCT_MIS if product_name == "MIS"
             else groww.PRODUCT_CNC
         )
         order_type = {
@@ -347,9 +537,7 @@ class GrowwExecutionService:
             "LIMIT": groww.ORDER_TYPE_LIMIT,
             "SL": groww.ORDER_TYPE_STOP_LOSS,
             "SL_M": groww.ORDER_TYPE_STOP_LOSS_MARKET,
-        }.get(request.order_type.upper())
-        if order_type is None:
-            raise ValueError("Unsupported order type")
+        }[order_type_name]
 
         transaction_type = (
             groww.TRANSACTION_TYPE_BUY if side == "BUY"

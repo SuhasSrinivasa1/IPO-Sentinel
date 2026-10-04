@@ -765,7 +765,7 @@ class DailyResearchService:
                     "all_known_candidates": candidate_dicts,
                     "errors": errors,
                     "trade_gate": {
-                        "special_preopen_order_entry": "09:00-09:45 IST; limit orders only",
+                        "special_preopen_order_entry": "09:00-09:45 IST; observe only (auto execution disabled)",
                         "special_preopen_matching": "09:45-09:55 IST",
                         "buffer": "09:55-10:00 IST",
                         "continuous_market": "from 10:00 IST, subject to live exchange/broker confirmation",

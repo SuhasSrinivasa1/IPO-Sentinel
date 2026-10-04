@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -417,3 +418,39 @@ def test_listing_day_rejects_quote_older_than_fifteen_seconds(monkeypatch):
     monkeypatch.setattr(service, "_authorized_candidate", lambda symbol, now: (candidate, plan))
     with pytest.raises(RuntimeError, match="sufficiently fresh"):
         service.submit(safe_request(quantity=10, budget_price=100.0))
+
+
+def test_automatic_new_entry_pauses_after_daily_objective(monkeypatch):
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=True, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        "app.execution_service.live_ledger.daily_performance",
+        lambda **kwargs: {"target_achieved": True},
+    )
+    service = GrowwExecutionService()
+    with pytest.raises(RuntimeError, match="DAILY_TARGET_REACHED"):
+        service.submit(safe_request(quantity=10, budget_price=100.0))
+
+
+def test_manual_card_request_can_route_with_auto_switch_off(monkeypatch):
+    fake = FakeGroww()
+    monkeypatch.setattr(
+        "app.execution_service.live_state_store.load",
+        lambda: LiveState(enabled=False, budget_rupees=100_000),
+    )
+    monkeypatch.setattr(
+        GrowwExecutionService,
+        "_session",
+        lambda self: SimpleNamespace(api=fake),
+    )
+    monkeypatch.setattr("app.execution_service.order_events.publish", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.execution_service.live_ledger.register_order", lambda **kwargs: None)
+
+    service = GrowwExecutionService()
+    arm_execution_safety(monkeypatch, service)
+    request = replace(safe_request(quantity=10, budget_price=100.0), manual=True)
+    result = service.submit(request)
+    assert result["groww_order_id"] == "G123"
+    assert fake.placed[0]["product"] == fake.PRODUCT_CNC

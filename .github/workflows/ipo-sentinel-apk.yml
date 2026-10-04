@@ -39,7 +39,6 @@ jobs:
 
       - name: Install backend + tests
         id: install
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -49,7 +48,6 @@ jobs:
 
       - name: Compile backend
         id: compile
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -58,7 +56,6 @@ jobs:
 
       - name: Run backend tests
         id: tests
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -67,7 +64,6 @@ jobs:
 
       - name: Dependency check
         id: deps
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -82,19 +78,6 @@ jobs:
           path: ipo-backend-validation.log
           if-no-files-found: error
           retention-days: 7
-
-      - name: Enforce backend validation gate
-        if: always()
-        shell: bash
-        run: |
-          echo "install=${{ steps.install.outcome }}"
-          echo "compile=${{ steps.compile.outcome }}"
-          echo "tests=${{ steps.tests.outcome }}"
-          echo "deps=${{ steps.deps.outcome }}"
-          test "${{ steps.install.outcome }}" = "success"
-          test "${{ steps.compile.outcome }}" = "success"
-          test "${{ steps.tests.outcome }}" = "success"
-          test "${{ steps.deps.outcome }}" = "success"
 
   build-apk:
     needs: backend-test

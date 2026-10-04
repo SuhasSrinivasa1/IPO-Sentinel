@@ -387,6 +387,8 @@ class GrowwExecutionService:
             max_quote_age_seconds=max_quote_age_seconds,
         )
         depth_available = self._quote_has_depth(quote)
+        if not depth_available:
+            raise RuntimeError("WAIT_MARKET_DEPTH: usable live market depth is unavailable")
         live_spread_bps = self._live_spread_bps(quote)
         if live_spread_bps is None:
             raise RuntimeError("WAIT_SPREAD_UNKNOWN: live Groww bid/offer is unavailable")

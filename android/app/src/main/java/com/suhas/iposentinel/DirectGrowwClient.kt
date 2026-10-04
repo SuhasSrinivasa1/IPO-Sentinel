@@ -25,9 +25,9 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Direct, device-side Groww authentication.
  *
- * There is intentionally no user-configurable trading-service URL, device id or
- * device key in this client. Groww credentials are encrypted with a key held in
- * Android Keystore and the broker base URL is fixed to Groww HTTPS.
+ * Groww credentials are encrypted with a key held in Android Keystore and the
+ * broker base URL is fixed to Groww HTTPS. No custom control-plane configuration
+ * is accepted by this client.
  */
 class DirectGrowwClient(context: Context) {
     private val appContext = context.applicationContext

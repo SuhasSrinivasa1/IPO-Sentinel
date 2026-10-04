@@ -17,7 +17,7 @@ class LiveNotificationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopMonitoring()
-            return START_NOT_STICKY
+            return START_STICKY
         }
 
         startForeground(

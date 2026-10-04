@@ -85,6 +85,7 @@ private fun IpoSentinelApp() {
     val settingsPrefs = remember {
         context.getSharedPreferences("ipo_sentinel_settings_draft", android.content.Context.MODE_PRIVATE)
     }
+    val directResearch = remember(context) { DirectResearchClient(context) }
     var growwTokenDraft by remember { mutableStateOf("") }
     var growwSecretDraft by remember { mutableStateOf("") }
     var staticIpDraft by rememberSaveable {
@@ -107,100 +108,55 @@ private fun IpoSentinelApp() {
             settingsPrefs.edit().putBoolean("whitelist_confirmed", whitelistDraft).apply()
         }
 
-        val api = BackendApi()
-        val (_, plan) = api.fetchResearchPlan()
+        lastValidation = directGroww.lastValidation()
+        if (savedStatus?.growwConfigured == true) {
+            val (validationResult, validationValue) = directGroww.validate()
+            if (validationResult.ok && validationValue != null) {
+                lastValidation = validationValue
+            }
+        }
+
+        val (_, plan) = directResearch.refreshPlan()
         if (plan != null) {
             researchPlan = plan
         }
 
-        val (_, liveState) = api.fetchLiveState()
-        if (liveState != null) {
-            liveEnabled = liveState.enabled
-            budget = liveState.budgetRupees.toFloat()
-        }
+        // v1.3.1 is a direct research build. Automatic order placement remains
+        // fail-closed until a dedicated direct execution/reconciliation path exists.
+        liveEnabled = false
     }
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(60_000L)
-            val (result, plan) = BackendApi().fetchResearchPlan()
+            delay(15 * 60_000L)
+            val (result, plan) = directResearch.refreshPlan(force = true)
             if (result.ok && plan != null) {
                 researchPlan = plan
                 AppAudit.log(
                     context,
-                    "RESEARCH_PLAN_UI_SYNC",
+                    "DIRECT_RESEARCH_PLAN_SYNC",
                     JSONObject()
                         .put("next_trading_day", plan.nextTradingDay ?: "")
                         .put("candidate_count", plan.nextTradingDayCandidates.size)
+                        .put("research_health", plan.researchHealth)
                 )
             }
         }
     }
 
     fun requestLiveState(enabled: Boolean) {
-        if (liveBusy) return
-
-        if (enabled && !NotificationHelper.notificationsAllowed(context)) {
-            liveMessage = "Allow IPO Sentinel notifications before enabling live trading."
-            liveMessageColor = Danger
-            AppAudit.log(context, "LIVE_ENABLE_BLOCKED_NOTIFICATIONS")
-            return
-        }
-
-        if (enabled && lastValidation?.liveExecutionReady != true) {
-            liveMessage = "Validate Groww + Static IP in Settings before enabling live trading."
-            liveMessageColor = Danger
-            AppAudit.log(context, "LIVE_ENABLE_BLOCKED_VALIDATION")
-            return
-        }
-
-        liveBusy = true
-        scope.launch {
-            AppAudit.log(
-                context,
-                "LIVE_STATE_REQUEST",
-                JSONObject()
-                    .put("enabled", enabled)
-                    .put("budget_rupees", budget.toInt())
-            )
-            val (result, state) = BackendApi().setLiveState(enabled, budget.toInt())
+        if (enabled) {
+            liveEnabled = false
             liveBusy = false
-
-            if (result.ok && state != null) {
-                liveEnabled = state.enabled
-                if (state.enabled) {
-                    context.getSharedPreferences("ipo_sentinel_live_events", android.content.Context.MODE_PRIVATE)
-                        .edit()
-                        .putLong("last_order_event_id", state.eventId)
-                        .apply()
-                    ContextCompat.startForegroundService(
-                        context,
-                        Intent(context, LiveNotificationService::class.java)
-                    )
-                    liveMessage = "Live trading enabled. Order notifications are active."
-                    liveMessageColor = Teal
-                } else {
-                    liveMessage = "Auto trading disabled. Signal and managed-position monitoring remain active."
-                    liveMessageColor = Muted
-                }
-                AppAudit.log(
-                    context,
-                    "LIVE_STATE_ACK",
-                    JSONObject()
-                        .put("enabled", state.enabled)
-                        .put("budget_rupees", state.budgetRupees)
-                )
-            } else {
-                liveMessage = result.error ?: "Live trading state could not be changed."
-                liveMessageColor = Danger
-                AppAudit.log(
-                    context,
-                    "LIVE_STATE_FAILED",
-                    JSONObject()
-                        .put("requested_enabled", enabled)
-                        .put("error", result.error ?: "unknown")
-                )
-            }
+            liveMessage = "Direct IPO research is active. Automatic live order placement is not enabled in this build."
+            liveMessageColor = Amber
+            AppAudit.log(context, "LIVE_ENABLE_BLOCKED_DIRECT_RESEARCH_BUILD")
+        } else {
+            liveEnabled = false
+            liveBusy = false
+            context.stopService(Intent(context, LiveNotificationService::class.java))
+            liveMessage = "Live auto-order execution remains off."
+            liveMessageColor = Muted
         }
     }
 
@@ -292,7 +248,7 @@ private fun IpoSentinelApp() {
                     onValidated = {
                         lastValidation = it
                         scope.launch {
-                            val (_, refreshedPlan) = BackendApi().fetchResearchPlan()
+                            val (_, refreshedPlan) = directResearch.refreshPlan(force = true)
                             if (refreshedPlan != null) researchPlan = refreshedPlan
                         }
                         if (!it.liveExecutionReady && liveEnabled) {
@@ -361,12 +317,12 @@ private fun DashboardScreen(
             title = "Daily research plan",
             primary = when {
                 researchPlan == null -> "NOT SYNCED"
-                researchFailed -> "RESEARCH SERVICE FAILED"
+                researchFailed -> "DIRECT RESEARCH FAILED"
                 researchPlan.researchHealth == "DEGRADED" -> "DEGRADED"
                 else -> "HEALTHY"
             },
             secondary = when {
-                researchPlan == null -> "Waiting for the backend research snapshot"
+                researchPlan == null -> "Fetching official NSE and Groww research data on this device"
                 researchFailed -> researchPlan.errors.joinToString(" • ").ifBlank {
                     "Official IPO source is unavailable; live execution remains blocked."
                 }
@@ -418,7 +374,7 @@ private fun DashboardScreen(
                 val displayCandidates = if (weekCandidates.isNotEmpty()) weekCandidates else knownCandidates
                 if (researchFailed) {
                     Text(
-                        "Research service failed — candidate list is not authoritative.",
+                        "Direct research source failed — candidate list is not authoritative.",
                         color = Danger,
                         fontSize = 12.sp
                     )
@@ -481,19 +437,14 @@ private fun DashboardScreen(
                     Column(Modifier.weight(1f)) {
                         Text("Live auto-trading", fontWeight = FontWeight.SemiBold)
                         Text(
-                            when {
-                                liveBusy -> "Changing live state…"
-                                liveEnabled -> "ARMED — order notifications active"
-                                validation?.liveExecutionReady == true -> "READY — switch on when you want live execution"
-                                else -> "LOCKED — Groww + static IP validation required"
-                            },
+                            "READ-ONLY BUILD — automatic order placement disabled",
                             color = if (liveEnabled) Danger else Muted,
                             fontSize = 13.sp
                         )
                     }
                     Switch(
-                        checked = liveEnabled,
-                        enabled = !liveBusy,
+                        checked = false,
+                        enabled = false,
                         onCheckedChange = onLiveEnabledChange
                     )
                 }
@@ -529,8 +480,8 @@ private fun DashboardScreen(
 
         StatusCard(
             title = "30-day IPO monitor",
-            primary = "0 active listings",
-            secondary = "Each new IPO remains under opportunity scan through trading day D30"
+            primary = knownCandidates.count { (it.tradingDayNumber ?: 0) in 1..30 }.toString() + " active listings",
+            secondary = "Each confirmed new IPO remains under direct research through trading day D30"
         )
         StatusCard(
             title = "Decision engine",
@@ -562,7 +513,7 @@ private fun ResearchScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val client = remember { BackendApi() }
+    val client = remember(context) { DirectResearchClient(context) }
     var dashboard by remember { mutableStateOf<ResearchDashboard?>(null) }
     var busy by remember { mutableStateOf(false) }
     var actionBusy by remember { mutableStateOf<String?>(null) }
@@ -573,7 +524,7 @@ private fun ResearchScreen(
         if (busy) return
         busy = true
         scope.launch {
-            val (result, value) = client.fetchResearchDashboard()
+            val (result, value) = client.fetchDashboard(force = showMessage)
             busy = false
             if (result.ok && value != null) {
                 dashboard = value
@@ -589,45 +540,22 @@ private fun ResearchScreen(
     }
 
     fun execute(symbol: String, action: String, fraction: Double = 1.0) {
-        if (actionBusy != null) return
-        actionBusy = symbol + ":" + action
-        message = "Submitting " + action.replace("_", " ") + " for " + symbol + "…"
+        message = "Live order execution is disabled in the direct research build. No order was sent for $symbol."
         messageColor = Amber
-        scope.launch {
-            val result = client.manualCardOrder(symbol, action, fraction)
-            actionBusy = null
-            if (result.ok) {
-                message = action.replace("_", " ") + " accepted by Groww for " + symbol +
-                    ". IPO Sentinel will reconcile and monitor it."
-                messageColor = Teal
-                AppAudit.log(
-                    context,
-                    "MANUAL_RESEARCH_CARD_ORDER",
-                    JSONObject()
-                        .put("symbol", symbol)
-                        .put("action", action)
-                        .put("budget_rupees", budgetRupees)
-                )
-                refresh()
-            } else {
-                message = result.error ?: "Order was not accepted"
-                messageColor = Danger
-                AppAudit.log(
-                    context,
-                    "MANUAL_RESEARCH_CARD_ORDER_REJECTED",
-                    JSONObject()
-                        .put("symbol", symbol)
-                        .put("action", action)
-                        .put("error", result.error ?: "unknown")
-                )
-            }
-        }
+        AppAudit.log(
+            context,
+            "DIRECT_RESEARCH_ORDER_BLOCKED",
+            JSONObject()
+                .put("symbol", symbol)
+                .put("action", action)
+                .put("fraction", fraction)
+        )
     }
 
     LaunchedEffect(Unit) {
         refresh()
         while (true) {
-            delay(30_000L)
+            delay(15 * 60_000L)
             if (!busy && actionBusy == null) refresh()
         }
     }
@@ -748,7 +676,7 @@ private fun ResearchScreen(
             SettingsSection("Live opportunity cards") {
                 if (data.activeSignals.isEmpty()) {
                     Text(
-                        "No signal currently passes the price, volume, order-book and net-edge gates.",
+                        "Direct IPO discovery and ranking are active. Live price/depth signal generation is not enabled in this build.",
                         color = Muted,
                         fontSize = 12.sp
                     )
@@ -994,21 +922,10 @@ private fun StrategiesScreen(modifier: Modifier) {
         if (busy) return
         busy = true
         scope.launch {
-            val (result, value) = client.fetchStrategySummary()
+            summary = LocalStrategyCatalog.summary()
+            sourceMessage = "Built-in 19-family strategy catalog loaded locally. Replay/champion statistics require a future on-device evidence store and are not fabricated."
             busy = false
-            if (result.ok && value != null) {
-                summary = value
-                sourceMessage = null
-                AppAudit.log(context, "STRATEGY_SUMMARY_SYNCED")
-            } else {
-                summary = LocalStrategyCatalog.summary()
-                sourceMessage = "Showing the built-in strategy catalog. Replay statistics are unavailable until the direct on-device research engine has completed local evidence collection."
-                AppAudit.log(
-                    context,
-                    "STRATEGY_SUMMARY_FALLBACK",
-                    JSONObject().put("error", result.error ?: "unknown")
-                )
-            }
+            AppAudit.log(context, "LOCAL_STRATEGY_CATALOG_LOADED")
         }
     }
 
@@ -1322,9 +1239,9 @@ private fun GrowwSettingsScreen(
                             validation = validationValue
                             onValidated(validationValue)
                             message = if (validationValue.liveExecutionReady) {
-                                "Saved and validated — LIVE EXECUTION READY"
+                                "Saved and validated — Groww + static IP connection ready"
                             } else {
-                                "Saved, but live execution is still locked by one or more validation checks"
+                                "Saved, but one or more Groww/NSE readiness checks still need attention"
                             }
                             messageColor = if (validationValue.liveExecutionReady) Teal else Amber
                         } else {
@@ -1358,9 +1275,9 @@ private fun GrowwSettingsScreen(
                         validation = value
                         onValidated(value)
                         message = if (value.liveExecutionReady) {
-                            "Validation passed — live execution can be armed"
+                            "Validation passed — Groww + static IP connection is ready"
                         } else {
-                            "Validation completed — one or more checks failed"
+                            "Validation completed — one or more Groww/NSE checks failed"
                         }
                         messageColor = if (value.liveExecutionReady) Teal else Amber
                         AppAudit.log(
@@ -1429,8 +1346,8 @@ private fun GrowwSettingsScreen(
                     fontSize = 12.sp
                 )
                 Text(
-                    if (it.liveExecutionReady) "LIVE EXECUTION READY" else "LIVE EXECUTION LOCKED",
-                    color = if (it.liveExecutionReady) Teal else Danger,
+                    if (it.liveExecutionReady) "BROKER + MARKET SOURCES READY" else "READINESS CHECKS INCOMPLETE",
+                    color = if (it.liveExecutionReady) Teal else Amber,
                     fontWeight = FontWeight.Bold
                 )
             }

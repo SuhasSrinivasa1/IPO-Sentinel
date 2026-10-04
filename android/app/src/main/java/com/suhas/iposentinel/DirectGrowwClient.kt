@@ -78,6 +78,26 @@ class DirectGrowwClient(context: Context) {
         }
     }
 
+    fun lastValidation(): ValidationStatus? {
+        val raw = prefs.getString(KEY_LAST_VALIDATION, null) ?: return null
+        return runCatching {
+            val json = JSONObject(raw)
+            ValidationStatus(
+                growwAuthOk = json.optBoolean("groww_auth_ok", false),
+                detectedEgressIp = json.optString("detected_egress_ip").ifBlank { null },
+                expectedStaticIp = json.optString("expected_static_ip").ifBlank { null },
+                staticIpMatches = json.optBoolean("static_ip_matches", false),
+                staticIpConfirmed = json.optBoolean("static_ip_confirmed", false),
+                secretStoreReady = json.optBoolean("secret_store_ready", false),
+                calendarReady = json.optBoolean("calendar_ready", false),
+                nseIdentitySourceReady = json.optBoolean("nse_identity_source_ready", false),
+                liveExecutionReady = json.optBoolean("live_execution_ready", false),
+                growwError = json.optString("groww_error").ifBlank { null },
+                egressError = json.optString("egress_error").ifBlank { null }
+            )
+        }.getOrNull()
+    }
+
     suspend fun validate(): Pair<ApiResult, ValidationStatus?> = withContext(Dispatchers.IO) {
         val expectedIp = prefs.getString(KEY_EXPECTED_IP, null)?.trim()?.takeIf { it.isNotEmpty() }
         val confirmed = prefs.getBoolean(KEY_IP_CONFIRMED, false)
@@ -131,7 +151,27 @@ class DirectGrowwClient(context: Context) {
             growwError = growwError,
             egressError = egressError
         )
+        persistValidation(value)
         ApiResult(true, 200, "{}", null) to value
+    }
+
+    private fun persistValidation(value: ValidationStatus) {
+        val json = JSONObject()
+            .put("groww_auth_ok", value.growwAuthOk)
+            .put("detected_egress_ip", value.detectedEgressIp)
+            .put("expected_static_ip", value.expectedStaticIp)
+            .put("static_ip_matches", value.staticIpMatches)
+            .put("static_ip_confirmed", value.staticIpConfirmed)
+            .put("secret_store_ready", value.secretStoreReady)
+            .put("calendar_ready", value.calendarReady)
+            .put("nse_identity_source_ready", value.nseIdentitySourceReady)
+            .put("live_execution_ready", value.liveExecutionReady)
+            .put("groww_error", value.growwError)
+            .put("egress_error", value.egressError)
+        prefs.edit()
+            .putString(KEY_LAST_VALIDATION, json.toString())
+            .putLong(KEY_LAST_VALIDATION_AT, System.currentTimeMillis())
+            .apply()
     }
 
     suspend fun accessToken(): Pair<ApiResult, String?> = withContext(Dispatchers.IO) {
@@ -376,6 +416,8 @@ class DirectGrowwClient(context: Context) {
         private const val PREFS_NAME = "ipo_sentinel_direct_settings"
         private const val KEY_EXPECTED_IP = "expected_static_ip"
         private const val KEY_IP_CONFIRMED = "static_ip_confirmed"
+        private const val KEY_LAST_VALIDATION = "last_validation"
+        private const val KEY_LAST_VALIDATION_AT = "last_validation_at"
         private const val BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
         private const val BROWSER_UA =
             "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140 Mobile Safari/537.36"

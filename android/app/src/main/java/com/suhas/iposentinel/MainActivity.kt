@@ -39,7 +39,7 @@ private val Danger = Color(0xFFFF6B6B)
 private val Muted = Color(0xFF9AA7B3)
 private val Amber = Color(0xFFFFC857)
 
-private enum class AppScreen { DASHBOARD, STRATEGIES, SETTINGS }
+private enum class AppScreen { DASHBOARD, RESEARCH, STRATEGIES, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
@@ -116,12 +116,12 @@ private fun IpoSentinelApp() {
         if (liveState != null) {
             liveEnabled = liveState.enabled
             budget = liveState.budgetRupees.toFloat()
-            if (liveState.enabled && NotificationHelper.notificationsAllowed(context)) {
-                ContextCompat.startForegroundService(
-                    context,
-                    Intent(context, LiveNotificationService::class.java)
-                )
-            }
+        }
+        if (api.provisioningStatus().provisioned && NotificationHelper.notificationsAllowed(context)) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, LiveNotificationService::class.java)
+            )
         }
     }
 
@@ -185,8 +185,7 @@ private fun IpoSentinelApp() {
                     liveMessage = "Live trading enabled. Order notifications are active."
                     liveMessageColor = Teal
                 } else {
-                    context.stopService(Intent(context, LiveNotificationService::class.java))
-                    liveMessage = "Live trading disabled."
+                    liveMessage = "Auto trading disabled. Signal and managed-position monitoring remain active."
                     liveMessageColor = Muted
                 }
                 AppAudit.log(
@@ -230,6 +229,12 @@ private fun IpoSentinelApp() {
                         label = { Text("Dashboard") }
                     )
                     NavigationBarItem(
+                        selected = screen == AppScreen.RESEARCH,
+                        onClick = { screen = AppScreen.RESEARCH },
+                        icon = { Text("◆") },
+                        label = { Text("Research") }
+                    )
+                    NavigationBarItem(
                         selected = screen == AppScreen.STRATEGIES,
                         onClick = { screen = AppScreen.STRATEGIES },
                         icon = { Text("▲") },
@@ -257,6 +262,11 @@ private fun IpoSentinelApp() {
                     growwConfigured = growwConfigured,
                     validation = lastValidation,
                     researchPlan = researchPlan
+                )
+
+                AppScreen.RESEARCH -> ResearchScreen(
+                    modifier = Modifier.padding(padding),
+                    budgetRupees = budget.toInt()
                 )
 
                 AppScreen.STRATEGIES -> StrategiesScreen(
@@ -545,6 +555,433 @@ private fun DashboardScreen(
             onClick = { onLiveEnabledChange(false) }
         ) {
             Text("Emergency Disable", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+
+@Composable
+private fun ResearchScreen(
+    modifier: Modifier,
+    budgetRupees: Int
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val client = remember { BackendApi() }
+    var dashboard by remember { mutableStateOf<ResearchDashboard?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var actionBusy by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var messageColor by remember { mutableStateOf(Muted) }
+
+    fun refresh(showMessage: Boolean = false) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            val (result, value) = client.fetchResearchDashboard()
+            busy = false
+            if (result.ok && value != null) {
+                dashboard = value
+                if (showMessage) {
+                    message = "Research intelligence refreshed"
+                    messageColor = Teal
+                }
+            } else {
+                message = result.error ?: "Research dashboard is unavailable"
+                messageColor = Danger
+            }
+        }
+    }
+
+    fun execute(symbol: String, action: String, fraction: Double = 1.0) {
+        if (actionBusy != null) return
+        actionBusy = symbol + ":" + action
+        message = "Submitting " + action.replace("_", " ") + " for " + symbol + "…"
+        messageColor = Amber
+        scope.launch {
+            val result = client.manualCardOrder(symbol, action, fraction)
+            actionBusy = null
+            if (result.ok) {
+                message = action.replace("_", " ") + " accepted by Groww for " + symbol +
+                    ". IPO Sentinel will reconcile and monitor it."
+                messageColor = Teal
+                AppAudit.log(
+                    context,
+                    "MANUAL_RESEARCH_CARD_ORDER",
+                    JSONObject()
+                        .put("symbol", symbol)
+                        .put("action", action)
+                        .put("budget_rupees", budgetRupees)
+                )
+                refresh()
+            } else {
+                message = result.error ?: "Order was not accepted"
+                messageColor = Danger
+                AppAudit.log(
+                    context,
+                    "MANUAL_RESEARCH_CARD_ORDER_REJECTED",
+                    JSONObject()
+                        .put("symbol", symbol)
+                        .put("action", action)
+                        .put("error", result.error ?: "unknown")
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+        while (true) {
+            delay(30_000L)
+            if (!busy && actionBusy == null) refresh()
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text("Research", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Tomorrow + D1-D30 IPO intelligence, signals, positions, outcomes and learning",
+            color = Muted,
+            fontSize = 13.sp
+        )
+
+        if (busy && dashboard == null) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        message?.let {
+            Text(it, color = messageColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        val data = dashboard
+        if (data == null) {
+            StatusCard(
+                title = "Research intelligence",
+                primary = "NOT SYNCED",
+                secondary = "A provisioned trading service is required for live research cards.",
+                primaryColor = Amber
+            )
+        } else {
+            val goal = data.dailyGoal
+            SettingsSection("IPO Sentinel daily objective") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("IPO-only realized P&L", color = Muted, fontSize = 11.sp)
+                        Text(
+                            String.format(Locale("en", "IN"), "₹%,.2f", goal.realizedNetPnl),
+                            fontSize = 25.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (goal.realizedNetPnl >= 0) Teal else Danger
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Objective", color = Muted, fontSize = 11.sp)
+                        Text("₹5,000", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    }
+                }
+                LinearProgressIndicator(
+                    progress = { (goal.realizedNetPnl.coerceAtLeast(0.0) / goal.targetRupees.coerceAtLeast(1.0)).coerceIn(0.0, 1.0).toFloat() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    if (goal.targetAchieved)
+                        "Objective reached. Automatic new entries pause; existing positions continue to be managed."
+                    else
+                        "Remaining ₹" + String.format(Locale("en", "IN"), "%,.2f", goal.remainingRupees) +
+                            " • " + goal.wins + " wins / " + goal.losses + " losses",
+                    color = if (goal.targetAchieved) Teal else Muted,
+                    fontSize = 12.sp
+                )
+                Text(
+                    "Calculated only from IPO Sentinel reconciled buy/sell fills. Groww account-level P&L and your other trades are excluded.",
+                    color = Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
+
+            SettingsSection("Top 3 watch for next session") {
+                if (data.topThree.isEmpty()) {
+                    Text("No ranked IPO candidates yet.", color = Muted, fontSize = 12.sp)
+                } else {
+                    data.topThree.take(3).forEachIndexed { index, pick ->
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("#" + (index + 1), color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.width(34.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text((pick.symbol ?: "SYMBOL PENDING") + " • " + pick.companyName, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        listOfNotNull(
+                                            pick.direction ?: pick.preMarketBias,
+                                            pick.board,
+                                            pick.tradingDayNumber?.let { "D" + it }
+                                        ).joinToString(" • "),
+                                        color = Muted,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                Text(
+                                    String.format(Locale.US, "%.0f", pick.confidence ?: pick.researchScore),
+                                    color = Teal,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (pick.entryPrice != null) {
+                                Text(
+                                    "Entry ₹" + String.format(Locale.US, "%.2f", pick.entryPrice) +
+                                        " • T1 ₹" + String.format(Locale.US, "%.2f", pick.target1 ?: 0.0) +
+                                        " • T2 ₹" + String.format(Locale.US, "%.2f", pick.target2 ?: 0.0) +
+                                        " • SL ₹" + String.format(Locale.US, "%.2f", pick.stopLoss ?: 0.0),
+                                    color = Muted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            if (pick.reasons.isNotEmpty()) {
+                                Text(pick.reasons.take(4).joinToString(" • "), color = Muted, fontSize = 10.sp)
+                            }
+                        }
+                        if (index < data.topThree.take(3).lastIndex) HorizontalDivider(color = Color(0xFF27313A))
+                    }
+                }
+            }
+
+            SettingsSection("Live opportunity cards") {
+                if (data.activeSignals.isEmpty()) {
+                    Text(
+                        "No signal currently passes the price, volume, order-book and net-edge gates.",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                } else {
+                    data.activeSignals.forEachIndexed { index, signal ->
+                        val signalColor = if (signal.direction == "LONG") Teal else Danger
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(signal.companyName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text(
+                                        signal.symbol + " • " + signal.direction + " • D" + signal.tradingDayNumber +
+                                            " • " + if (signal.isSme) "SME" else "Mainboard",
+                                        color = signalColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Text(
+                                    String.format(Locale.US, "%.0f%%", signal.confidence),
+                                    color = signalColor,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                StrategyStat("Entry", "₹" + String.format(Locale.US, "%.2f", signal.entryPrice))
+                                StrategyStat("T1", "₹" + String.format(Locale.US, "%.2f", signal.target1))
+                                StrategyStat("T2", "₹" + String.format(Locale.US, "%.2f", signal.target2))
+                                StrategyStat("Stop", "₹" + String.format(Locale.US, "%.2f", signal.stopLoss))
+                            }
+                            Text(
+                                "Qty " + signal.quantity +
+                                    " • RVOL " + String.format(Locale.US, "%.2fx", signal.relativeVolume) +
+                                    " • Spread " + String.format(Locale.US, "%.0f bps", signal.spreadBps) +
+                                    " • Est. net @ T2 ₹" + String.format(Locale("en", "IN"), "%,.0f", signal.expectedNetAtTarget2),
+                                color = Muted,
+                                fontSize = 11.sp
+                            )
+                            if (signal.reasonCodes.isNotEmpty()) {
+                                Text(signal.reasonCodes.take(5).joinToString(" • "), color = Muted, fontSize = 10.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    execute(
+                                        signal.symbol,
+                                        if (signal.direction == "LONG") "BUY" else "SHORT"
+                                    )
+                                },
+                                enabled = actionBusy == null,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (actionBusy == signal.symbol + ":" + if (signal.direction == "LONG") "BUY" else "SHORT")
+                                        "Submitting…"
+                                    else if (signal.direction == "LONG")
+                                        "BUY " + signal.quantity + " CNC"
+                                    else
+                                        "SHORT " + signal.quantity + " MIS"
+                                )
+                            }
+                        }
+                        if (index < data.activeSignals.lastIndex) HorizontalDivider(color = Color(0xFF27313A))
+                    }
+                }
+            }
+
+            SettingsSection("Managed IPO Sentinel positions") {
+                if (data.openPositions.isEmpty()) {
+                    Text("No open IPO Sentinel positions.", color = Muted, fontSize = 12.sp)
+                } else {
+                    data.openPositions.forEachIndexed { index, position ->
+                        val isLong = position.quantity > 0
+                        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(position.symbol, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        (if (isLong) "LONG" else "SHORT") + " • " + kotlin.math.abs(position.quantity) + " units",
+                                        color = Muted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Text(
+                                    String.format(Locale("en", "IN"), "%+,.2f", position.unrealizedPnl),
+                                    color = if (position.unrealizedPnl >= 0) Teal else Danger,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                "Avg ₹" + String.format(Locale.US, "%.2f", position.avgPrice) +
+                                    " • LTP ₹" + String.format(Locale.US, "%.2f", position.mark),
+                                color = Muted,
+                                fontSize = 11.sp
+                            )
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { execute(position.symbol, if (isLong) "SELL_25" else "COVER_25") },
+                                    enabled = actionBusy == null,
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("25%", fontSize = 11.sp) }
+                                OutlinedButton(
+                                    onClick = { execute(position.symbol, if (isLong) "SELL_50" else "COVER_50") },
+                                    enabled = actionBusy == null,
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("50%", fontSize = 11.sp) }
+                                Button(
+                                    onClick = { execute(position.symbol, if (isLong) "SELL_ALL" else "COVER_ALL") },
+                                    enabled = actionBusy == null,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Danger),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("EXIT", fontSize = 11.sp) }
+                            }
+                        }
+                        if (index < data.openPositions.lastIndex) HorizontalDivider(color = Color(0xFF27313A))
+                    }
+                }
+            }
+
+            SettingsSection("Tomorrow's listing queue") {
+                if (data.tomorrowCandidates.isEmpty()) {
+                    Text("No authoritative NSE listing candidates currently queued.", color = Muted, fontSize = 12.sp)
+                } else {
+                    data.tomorrowCandidates.forEach { candidate ->
+                        Text(
+                            (candidate.symbol ?: "Symbol pending") + " • " + candidate.companyName +
+                                " • " + if (candidate.isSme) "SME" else "Mainboard",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            (candidate.issuePriceText ?: "Issue price pending") +
+                                (candidate.subscriptionMultiple?.let { " • Subscription " + String.format(Locale.US, "%.2fx", it) } ?: "") +
+                                " • " + candidate.resolutionStatus,
+                            color = Muted,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+
+            SettingsSection("Active D1-D30 universe") {
+                Text(
+                    data.active30dCandidates.size.toString() + " tracked • Mainboard " +
+                        data.mainboardCoverage + " • SME " + data.smeCoverage,
+                    fontWeight = FontWeight.SemiBold
+                )
+                data.active30dCandidates.take(30).forEach { candidate ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(candidate.symbol ?: "Pending", modifier = Modifier.width(100.dp), fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                        Text(
+                            "D" + (candidate.tradingDayNumber ?: 0) + " • " +
+                                if (candidate.isSme) "SME" else "Mainboard",
+                            color = Muted,
+                            fontSize = 10.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            if (candidate.symbolResolved) "READY" else "IDENTITY",
+                            color = if (candidate.symbolResolved) Teal else Amber,
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+                Text(data.coverageRule, color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
+            }
+
+            SettingsSection("Closed calls") {
+                if (data.closedCalls.isEmpty()) {
+                    Text("No completed IPO Sentinel calls yet.", color = Muted, fontSize = 12.sp)
+                } else {
+                    data.closedCalls.take(50).forEachIndexed { index, call ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(call.symbol + " • " + call.direction, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    call.quantity + " units • ₹" + String.format(Locale.US, "%.2f", call.entryPrice) +
+                                        " → ₹" + String.format(Locale.US, "%.2f", call.exitPrice),
+                                    color = Muted,
+                                    fontSize = 10.sp
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    call.outcome,
+                                    color = if (call.outcome == "WIN") Teal else if (call.outcome == "LOSS") Danger else Muted,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "₹" + String.format(Locale("en", "IN"), "%+,.2f", call.netPnl),
+                                    color = if (call.netPnl >= 0) Teal else Danger,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                        if (index < data.closedCalls.take(50).lastIndex) HorizontalDivider(color = Color(0xFF27313A))
+                    }
+                }
+            }
+
+            SettingsSection("What we learned / strategy maintenance") {
+                if (data.dailyLearning.isEmpty() && data.weeklyLearning.isEmpty()) {
+                    Text(
+                        "Learning records will appear after the daily 16:20 review and Sunday strategy revalidation.",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                }
+                data.dailyLearning.take(7).forEach { record ->
+                    Text("Daily • " + record.summary, fontSize = 11.sp)
+                }
+                data.weeklyLearning.take(4).forEach { record ->
+                    Text("Weekly • " + record.summary, fontSize = 11.sp, color = Amber)
+                }
+                Text(
+                    "Champions are retained unless future evidence invalidates their promotion gates. Repeatedly negative strategies are flagged for rework/demotion rather than silently reused.",
+                    color = Muted,
+                    fontSize = 10.sp,
+                    lineHeight = 15.sp
+                )
+            }
+
+            OutlinedButton(
+                onClick = { refresh(showMessage = true) },
+                enabled = !busy && actionBusy == null,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (busy) "Refreshing…" else "Refresh Research")
+            }
         }
     }
 }

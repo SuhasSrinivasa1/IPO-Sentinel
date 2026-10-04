@@ -95,8 +95,8 @@ private fun IpoSentinelApp() {
     }
 
     LaunchedEffect(Unit) {
-        val api = BackendApi()
-        val (_, savedStatus) = api.fetchStatus()
+        val directGroww = DirectGrowwClient(context)
+        val (_, savedStatus) = directGroww.fetchStatus()
         if (savedStatus != null) {
             growwConfigured = savedStatus.growwConfigured
             if (!savedStatus.expectedStaticIp.isNullOrBlank()) {
@@ -107,6 +107,7 @@ private fun IpoSentinelApp() {
             settingsPrefs.edit().putBoolean("whitelist_confirmed", whitelistDraft).apply()
         }
 
+        val api = BackendApi()
         val (_, plan) = api.fetchResearchPlan()
         if (plan != null) {
             researchPlan = plan
@@ -116,12 +117,6 @@ private fun IpoSentinelApp() {
         if (liveState != null) {
             liveEnabled = liveState.enabled
             budget = liveState.budgetRupees.toFloat()
-        }
-        if (api.provisioningStatus().provisioned && NotificationHelper.notificationsAllowed(context)) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, LiveNotificationService::class.java)
-            )
         }
     }
 
@@ -296,14 +291,6 @@ private fun IpoSentinelApp() {
                     },
                     onValidated = {
                         lastValidation = it
-                        if (BackendApi().provisioningStatus().provisioned &&
-                            NotificationHelper.notificationsAllowed(context)
-                        ) {
-                            ContextCompat.startForegroundService(
-                                context,
-                                Intent(context, LiveNotificationService::class.java)
-                            )
-                        }
                         scope.launch {
                             val (_, refreshedPlan) = BackendApi().fetchResearchPlan()
                             if (refreshedPlan != null) researchPlan = refreshedPlan
@@ -1152,7 +1139,7 @@ private fun GrowwSettingsScreen(
     var validation by remember { mutableStateOf<ValidationStatus?>(null) }
     var notificationAllowed by remember { mutableStateOf(NotificationHelper.notificationsAllowed(context)) }
     val scope = rememberCoroutineScope()
-    val client = remember { BackendApi() }
+    val client = remember(context) { DirectGrowwClient(context) }
 
     fun refreshStatus(showMessage: Boolean) {
         if (busy) return
@@ -1198,26 +1185,6 @@ private fun GrowwSettingsScreen(
             color = Muted,
             fontSize = 13.sp
         )
-
-        val provisioning = remember { BackendApi().provisioningStatus() }
-        SettingsSection("Trading Service") {
-            CheckRow("HTTPS endpoint configured", provisioning.endpointConfigured)
-            CheckRow("Device authentication configured", provisioning.deviceKeyConfigured)
-            Text(
-                provisioning.message,
-                color = if (provisioning.provisioned) Teal else Danger,
-                fontSize = 12.sp,
-                lineHeight = 18.sp
-            )
-            if (!provisioning.provisioned) {
-                Text(
-                    "Groww credentials entered below are kept in this screen while you switch tabs, but they cannot be saved to the secure backend until the APK is built with the trading service provisioned.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp
-                )
-            }
-        }
 
         SettingsSection("Order Notifications") {
             CheckRow("Notification permission", notificationAllowed)
@@ -1285,9 +1252,9 @@ private fun GrowwSettingsScreen(
             Text(
                 when {
                     status?.growwConfigured == true && totpToken.isBlank() && totpSecret.isBlank() ->
-                        "Groww credentials are saved securely on the trading service. Enter new values only to replace them."
+                        "Groww credentials are encrypted on this phone using Android Keystore. Enter new values only to replace them."
                     else ->
-                        "Unsaved token/secret edits remain in memory while you switch tabs. After a successful save, they are cleared from the screen and are never returned by the backend."
+                        "The token and TOTP secret are stored only after you tap Save. They are encrypted locally and are never shown again."
                 },
                 color = Muted,
                 fontSize = 12.sp
@@ -1339,7 +1306,7 @@ private fun GrowwSettingsScreen(
                     busy = false
                     if (result.ok) {
                         onConfigurationSaved()
-                        message = "Groww settings saved securely — validating connection…"
+                        message = "Groww settings saved securely on this phone — validating direct connection…"
                         messageColor = Teal
                         AppAudit.log(
                             context,
@@ -1436,7 +1403,7 @@ private fun GrowwSettingsScreen(
 
         status?.let {
             SettingsSection("Saved status") {
-                CheckRow("Secure credential vault", it.secretStoreReady)
+                CheckRow("Android Keystore credential vault", it.secretStoreReady)
                 CheckRow("Groww credentials saved", it.growwConfigured)
                 CheckRow("Static IP marked as whitelisted", it.staticIpConfirmed)
             }
@@ -1447,7 +1414,7 @@ private fun GrowwSettingsScreen(
                 CheckRow("Groww TOTP authentication", it.growwAuthOk)
                 CheckRow("Static public IP matches", it.staticIpMatches)
                 CheckRow("Groww whitelist confirmed", it.staticIpConfirmed)
-                CheckRow("Secure credential vault", it.secretStoreReady)
+                CheckRow("Android Keystore credential vault", it.secretStoreReady)
                 CheckRow("Official NSE calendar ready", it.calendarReady)
                 CheckRow("NSE listing identity source ready", it.nseIdentitySourceReady)
                 HorizontalDivider(color = Color(0xFF27313A))
@@ -1471,7 +1438,7 @@ private fun GrowwSettingsScreen(
 
         SettingsSection("Weekly Verification Logs") {
             Text(
-                "Exports the last 7 days of app audit events plus backend audit events when available. Broker secrets are excluded.",
+                "Exports the last 7 days of app audit events. Groww credentials and access tokens are excluded.",
                 color = Muted,
                 fontSize = 12.sp,
                 lineHeight = 18.sp
@@ -1499,7 +1466,7 @@ private fun GrowwSettingsScreen(
         }
 
         Text(
-            "Security: successfully saved TOTP/API credentials are never repopulated into the UI. A blank credential field after a successful save means the backend retains the encrypted value; check Saved status instead.",
+            "Security: Groww TOTP/API credentials are encrypted with Android Keystore and are never repopulated into the UI. IPO Sentinel uses fixed HTTPS endpoints; there is no trading-service URL, device ID or device key to configure.",
             color = Muted,
             fontSize = 12.sp
         )

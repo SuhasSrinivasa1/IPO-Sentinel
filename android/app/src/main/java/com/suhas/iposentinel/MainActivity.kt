@@ -296,6 +296,14 @@ private fun IpoSentinelApp() {
                     },
                     onValidated = {
                         lastValidation = it
+                        if (BackendApi().provisioningStatus().provisioned &&
+                            NotificationHelper.notificationsAllowed(context)
+                        ) {
+                            ContextCompat.startForegroundService(
+                                context,
+                                Intent(context, LiveNotificationService::class.java)
+                            )
+                        }
                         scope.launch {
                             val (_, refreshedPlan) = BackendApi().fetchResearchPlan()
                             if (refreshedPlan != null) researchPlan = refreshedPlan

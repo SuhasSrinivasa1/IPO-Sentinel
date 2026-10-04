@@ -123,18 +123,25 @@ jobs:
             exit 1
           fi
           grep -R -n 'https://api.groww.in' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
+          grep -R -n 'https://www.nseindia.com' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -R -n 'growwapi-assets.groww.in/instruments/instrument.csv' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -R -n 'DirectResearchClient' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+          if grep -n -E 'fetchResearchPlan\(|fetchResearchDashboard\(|fetchStrategySummary\(' app/src/main/java/com/suhas/iposentinel/MainActivity.kt; then
+            echo "MainActivity still depends on the disabled legacy research API."
+            exit 1
+          fi
           grep -R -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
 
       - name: Prepare artifact
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.0-DIRECT-debug.apk
-          sha256sum release/IPO-Sentinel-v1.3.0-DIRECT-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.1-DIRECT-RESEARCH-debug.apk
+          sha256sum release/IPO-Sentinel-v1.3.1-DIRECT-RESEARCH-debug.apk > release/SHA256SUMS.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.3.0-DIRECT
+          name: IPO-Sentinel-v1.3.1-DIRECT-RESEARCH
           path: android/release/*
           if-no-files-found: error
           retention-days: 30

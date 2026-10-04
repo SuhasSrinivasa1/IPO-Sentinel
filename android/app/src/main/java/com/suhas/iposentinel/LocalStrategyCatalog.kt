@@ -55,7 +55,7 @@ object LocalStrategyCatalog {
             untestedFamilies = families.size,
             topFive = emptyList(),
             families = families,
-            rankingNote = "Local strategy catalog shown. Replay evidence will populate automatically when the trading service is provisioned."
+            rankingNote = "Local strategy catalog shown. Replay evidence will populate as the direct on-device research engine collects sufficient observations."
         )
     }
 }

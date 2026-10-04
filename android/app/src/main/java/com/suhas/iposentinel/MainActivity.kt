@@ -658,7 +658,7 @@ private fun ResearchScreen(
             StatusCard(
                 title = "Research intelligence",
                 primary = "NOT SYNCED",
-                secondary = "A provisioned trading service is required for live research cards.",
+                secondary = "Live research cards are unavailable until the direct on-device research engine has current market data.",
                 primaryColor = Amber
             )
         } else {
@@ -1002,7 +1002,7 @@ private fun StrategiesScreen(modifier: Modifier) {
                 AppAudit.log(context, "STRATEGY_SUMMARY_SYNCED")
             } else {
                 summary = LocalStrategyCatalog.summary()
-                sourceMessage = "Showing the built-in strategy catalog. Replay statistics will sync when the trading service is available."
+                sourceMessage = "Showing the built-in strategy catalog. Replay statistics are unavailable until the direct on-device research engine has completed local evidence collection."
                 AppAudit.log(
                     context,
                     "STRATEGY_SUMMARY_FALLBACK",
@@ -1466,7 +1466,7 @@ private fun GrowwSettingsScreen(
         }
 
         Text(
-            "Security: Groww TOTP/API credentials are encrypted with Android Keystore and are never repopulated into the UI. IPO Sentinel uses fixed HTTPS endpoints; there is no trading-service URL, device ID or device key to configure.",
+            "Security: Groww TOTP/API credentials are encrypted with Android Keystore and are never repopulated into the UI. IPO Sentinel uses fixed HTTPS endpoints for Groww and official market data; there is no server URL, device ID or device key to configure.",
             color = Muted,
             fontSize = 12.sp
         )

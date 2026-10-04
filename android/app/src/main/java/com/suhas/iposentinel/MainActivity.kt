@@ -82,11 +82,29 @@ private fun IpoSentinelApp() {
     var growwConfigured by remember { mutableStateOf(false) }
     var researchPlan by remember { mutableStateOf<ResearchPlan?>(null) }
 
+    val settingsPrefs = remember {
+        context.getSharedPreferences("ipo_sentinel_settings_draft", android.content.Context.MODE_PRIVATE)
+    }
+    var growwTokenDraft by remember { mutableStateOf("") }
+    var growwSecretDraft by remember { mutableStateOf("") }
+    var staticIpDraft by rememberSaveable {
+        mutableStateOf(settingsPrefs.getString("static_ip", "").orEmpty())
+    }
+    var whitelistDraft by rememberSaveable {
+        mutableStateOf(settingsPrefs.getBoolean("whitelist_confirmed", false))
+    }
+
     LaunchedEffect(Unit) {
         val api = BackendApi()
         val (_, savedStatus) = api.fetchStatus()
         if (savedStatus != null) {
             growwConfigured = savedStatus.growwConfigured
+            if (!savedStatus.expectedStaticIp.isNullOrBlank()) {
+                staticIpDraft = savedStatus.expectedStaticIp
+                settingsPrefs.edit().putString("static_ip", staticIpDraft).apply()
+            }
+            whitelistDraft = savedStatus.staticIpConfirmed
+            settingsPrefs.edit().putBoolean("whitelist_confirmed", whitelistDraft).apply()
         }
 
         val (_, plan) = api.fetchResearchPlan()
@@ -247,7 +265,25 @@ private fun IpoSentinelApp() {
 
                 AppScreen.SETTINGS -> GrowwSettingsScreen(
                     modifier = Modifier.padding(padding),
-                    onConfigurationSaved = { growwConfigured = true },
+                    totpToken = growwTokenDraft,
+                    onTotpTokenChange = { growwTokenDraft = it },
+                    totpSecret = growwSecretDraft,
+                    onTotpSecretChange = { growwSecretDraft = it },
+                    staticIp = staticIpDraft,
+                    onStaticIpChange = {
+                        staticIpDraft = it.trim()
+                        settingsPrefs.edit().putString("static_ip", staticIpDraft).apply()
+                    },
+                    whitelistConfirmed = whitelistDraft,
+                    onWhitelistConfirmedChange = {
+                        whitelistDraft = it
+                        settingsPrefs.edit().putBoolean("whitelist_confirmed", whitelistDraft).apply()
+                    },
+                    onConfigurationSaved = {
+                        growwConfigured = true
+                        growwTokenDraft = ""
+                        growwSecretDraft = ""
+                    },
                     onValidated = {
                         lastValidation = it
                         scope.launch {
@@ -650,14 +686,18 @@ private fun StrategiesScreen(modifier: Modifier) {
 @Composable
 private fun GrowwSettingsScreen(
     modifier: Modifier,
+    totpToken: String,
+    onTotpTokenChange: (String) -> Unit,
+    totpSecret: String,
+    onTotpSecretChange: (String) -> Unit,
+    staticIp: String,
+    onStaticIpChange: (String) -> Unit,
+    whitelistConfirmed: Boolean,
+    onWhitelistConfirmedChange: (Boolean) -> Unit,
     onConfigurationSaved: () -> Unit,
     onValidated: (ValidationStatus) -> Unit
 ) {
     val context = LocalContext.current
-    var totpToken by remember { mutableStateOf("") }
-    var totpSecret by remember { mutableStateOf("") }
-    var staticIp by rememberSaveable { mutableStateOf("") }
-    var whitelistConfirmed by rememberSaveable { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var exportBusy by remember { mutableStateOf(false) }
@@ -678,8 +718,8 @@ private fun GrowwSettingsScreen(
             notificationAllowed = NotificationHelper.notificationsAllowed(context)
             if (result.ok && value != null) {
                 status = value
-                if (!value.expectedStaticIp.isNullOrBlank()) staticIp = value.expectedStaticIp
-                whitelistConfirmed = value.staticIpConfirmed
+                if (!value.expectedStaticIp.isNullOrBlank()) onStaticIpChange(value.expectedStaticIp)
+                onWhitelistConfirmedChange(value.staticIpConfirmed)
                 if (showMessage) {
                     message = "Settings status refreshed"
                     messageColor = Teal
@@ -713,6 +753,26 @@ private fun GrowwSettingsScreen(
             color = Muted,
             fontSize = 13.sp
         )
+
+        val provisioning = remember { BackendApi().provisioningStatus() }
+        SettingsSection("Trading Service") {
+            CheckRow("HTTPS endpoint configured", provisioning.endpointConfigured)
+            CheckRow("Device authentication configured", provisioning.deviceKeyConfigured)
+            Text(
+                provisioning.message,
+                color = if (provisioning.provisioned) Teal else Danger,
+                fontSize = 12.sp,
+                lineHeight = 18.sp
+            )
+            if (!provisioning.provisioned) {
+                Text(
+                    "Groww credentials entered below are kept in this screen while you switch tabs, but they cannot be saved to the secure backend until the APK is built with the trading service provisioned.",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+            }
+        }
 
         SettingsSection("Order Notifications") {
             CheckRow("Notification permission", notificationAllowed)
@@ -763,7 +823,7 @@ private fun GrowwSettingsScreen(
         SettingsSection("Groww TOTP") {
             OutlinedTextField(
                 value = totpToken,
-                onValueChange = { totpToken = it },
+                onValueChange = onTotpTokenChange,
                 label = { Text("Groww TOTP token / API key") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
@@ -771,14 +831,19 @@ private fun GrowwSettingsScreen(
             )
             OutlinedTextField(
                 value = totpSecret,
-                onValueChange = { totpSecret = it },
+                onValueChange = onTotpSecretChange,
                 label = { Text("Groww TOTP secret") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
-                "The secret is stored encrypted and is never displayed again after saving.",
+                when {
+                    status?.growwConfigured == true && totpToken.isBlank() && totpSecret.isBlank() ->
+                        "Groww credentials are saved securely on the trading service. Enter new values only to replace them."
+                    else ->
+                        "Unsaved token/secret edits remain in memory while you switch tabs. After a successful save, they are cleared from the screen and are never returned by the backend."
+                },
                 color = Muted,
                 fontSize = 12.sp
             )
@@ -787,7 +852,7 @@ private fun GrowwSettingsScreen(
         SettingsSection("Static IP") {
             OutlinedTextField(
                 value = staticIp,
-                onValueChange = { staticIp = it.trim() },
+                onValueChange = onStaticIpChange,
                 label = { Text("Whitelisted static public IP") },
                 placeholder = { Text("203.0.113.10") },
                 singleLine = true,
@@ -797,7 +862,7 @@ private fun GrowwSettingsScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(
                     checked = whitelistConfirmed,
-                    onCheckedChange = { whitelistConfirmed = it }
+                    onCheckedChange = onWhitelistConfirmedChange
                 )
                 Text(
                     "I have whitelisted this IP in Groww",
@@ -828,10 +893,8 @@ private fun GrowwSettingsScreen(
                     )
                     busy = false
                     if (result.ok) {
-                        totpToken = ""
-                        totpSecret = ""
                         onConfigurationSaved()
-                        message = "Groww settings saved securely"
+                        message = "Groww settings saved securely — validating connection…"
                         messageColor = Teal
                         AppAudit.log(
                             context,
@@ -841,6 +904,21 @@ private fun GrowwSettingsScreen(
                                 .put("whitelist_confirmed", whitelistConfirmed)
                         )
                         refreshStatus(showMessage = false)
+
+                        val (validationResult, validationValue) = client.validate()
+                        if (validationResult.ok && validationValue != null) {
+                            validation = validationValue
+                            onValidated(validationValue)
+                            message = if (validationValue.liveExecutionReady) {
+                                "Saved and validated — LIVE EXECUTION READY"
+                            } else {
+                                "Saved, but live execution is still locked by one or more validation checks"
+                            }
+                            messageColor = if (validationValue.liveExecutionReady) Teal else Amber
+                        } else {
+                            message = validationResult.error ?: "Settings saved, but validation failed"
+                            messageColor = Amber
+                        }
                     } else {
                         message = result.error ?: "Save failed"
                         messageColor = Danger
@@ -976,7 +1054,7 @@ private fun GrowwSettingsScreen(
         }
 
         Text(
-            "Security: the TOTP token and secret are not shown after saving. Enter new values and save again if they need to be replaced.",
+            "Security: successfully saved TOTP/API credentials are never repopulated into the UI. A blank credential field after a successful save means the backend retains the encrypted value; check Saved status instead.",
             color = Muted,
             fontSize = 12.sp
         )

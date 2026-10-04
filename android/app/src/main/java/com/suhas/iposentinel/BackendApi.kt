@@ -124,9 +124,35 @@ data class ValidationStatus(
     val egressError: String? = null
 )
 
+data class ServiceProvisioningStatus(
+    val provisioned: Boolean,
+    val endpointConfigured: Boolean,
+    val deviceKeyConfigured: Boolean,
+    val message: String
+)
+
 class BackendApi {
     private val baseUrl: String = BuildConfig.IPO_SENTINEL_API_URL.trim().trimEnd('/')
-    private val deviceKey: String = BuildConfig.IPO_SENTINEL_DEVICE_KEY
+    private val deviceKey: String = BuildConfig.IPO_SENTINEL_DEVICE_KEY.trim()
+
+    fun provisioningStatus(): ServiceProvisioningStatus {
+        val endpointConfigured = baseUrl.startsWith("https://")
+        val deviceKeyConfigured = deviceKey.isNotBlank()
+        val provisioned = endpointConfigured && deviceKeyConfigured
+        val message = when {
+            provisioned -> "Trading service endpoint and device authentication are configured."
+            !endpointConfigured && !deviceKeyConfigured ->
+                "This APK was built without the trading-service endpoint and device key."
+            !endpointConfigured -> "The trading-service HTTPS endpoint is missing or invalid."
+            else -> "The trading-service device key is missing."
+        }
+        return ServiceProvisioningStatus(
+            provisioned = provisioned,
+            endpointConfigured = endpointConfigured,
+            deviceKeyConfigured = deviceKeyConfigured,
+            message = message
+        )
+    }
 
     suspend fun saveGrowwSettings(
         totpToken: String,
@@ -412,12 +438,13 @@ class BackendApi {
 
     private suspend fun request(method: String, path: String, body: String?): ApiResult =
         withContext(Dispatchers.IO) {
-            if (baseUrl.isBlank()) {
+            val provisioning = provisioningStatus()
+            if (!provisioning.provisioned) {
                 return@withContext ApiResult(
                     ok = false,
                     statusCode = 0,
                     body = "",
-                    error = "Trading service is not provisioned in this build"
+                    error = provisioning.message
                 )
             }
             if (!baseUrl.startsWith("https://")) {

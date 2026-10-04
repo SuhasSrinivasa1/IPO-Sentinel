@@ -18,8 +18,8 @@ android {
         applicationId = "com.suhas.iposentinel"
         minSdk = 28
         targetSdk = 35
-        versionCode = 111
-        versionName = "1.1.1"
+        versionCode = 112
+        versionName = "1.1.2"
 
         buildConfigField(
             "String",

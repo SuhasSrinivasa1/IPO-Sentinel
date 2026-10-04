@@ -162,3 +162,13 @@ This release keeps the v1.1.0 autonomous IPO research and exact-identity workflo
 - Unknown product strings are rejected instead of silently falling back to CNC.
 - During 10:00-10:05 on listing day, new MARKET entries are blocked; price-controlled orders may proceed only if all identity, quote, depth, liquidity, spread, impact, circuit, reconciliation, position-isolation and budget gates pass.
 - The displayed 09:00-09:45 special-pre-open rule now matches the execution policy: IPO Sentinel observes that phase and does not auto-submit continuous-market orders.
+
+
+## Settings and provisioning stability release (v1.1.2)
+
+- Unsaved Groww token and TOTP-secret edits remain in memory while switching between Dashboard, Strategies and Settings.
+- Static-IP draft and whitelist confirmation persist locally across tab changes and app restarts.
+- Successfully saved credentials remain backend-only and are intentionally not repopulated into Android fields; the UI now shows a clear saved-state explanation.
+- Saving Groww settings now automatically triggers validation so readiness updates immediately.
+- Settings now displays explicit trading-service provisioning state (HTTPS endpoint and device authentication) instead of the ambiguous generic error.
+- Live trading still fails closed if the APK has not been built with a real HTTPS trading-service endpoint and device key. The application does not fabricate or fall back to direct device-side broker execution.

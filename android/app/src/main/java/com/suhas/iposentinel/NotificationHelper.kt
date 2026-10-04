@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 object NotificationHelper {
     const val LIVE_CHANNEL = "ipo_sentinel_live"
     const val ORDER_CHANNEL = "ipo_sentinel_orders"
+    const val SIGNAL_CHANNEL = "ipo_sentinel_signals"
     const val LIVE_SERVICE_NOTIFICATION_ID = 1001
 
     fun createChannels(context: Context) {
@@ -37,6 +38,15 @@ object NotificationHelper {
                 description = "Order placement, fills, exits, rejections and risk alerts."
             }
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                SIGNAL_CHANNEL,
+                "IPO trading signals",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Valid IPO long/short opportunities, invalidations and strategy-review alerts."
+            }
+        )
     }
 
     fun notificationsAllowed(context: Context): Boolean {
@@ -51,7 +61,7 @@ object NotificationHelper {
         return NotificationCompat.Builder(context, LIVE_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("IPO Sentinel Live")
-            .setContentText("Monitoring live order lifecycle events")
+            .setContentText("Monitoring IPO signals, managed positions and order lifecycle")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -75,6 +85,9 @@ object NotificationHelper {
             "ORDER_CANCELLED" -> "Order cancelled"
             "RISK_HALT" -> "Risk halt"
             "FORCE_FLAT_STARTED" -> "Intraday force-exit started"
+            "SIGNAL_READY" -> "IPO opportunity ready"
+            "SIGNAL_INVALIDATED" -> "IPO opportunity invalidated"
+            "STRATEGY_REVIEW" -> "IPO strategy / position update"
             else -> "IPO Sentinel activity"
         }
 
@@ -85,8 +98,9 @@ object NotificationHelper {
         event.price?.let { px -> parts += "₹" + String.format("%.2f", px) }
         if (!event.message.isNullOrBlank()) parts += event.message
 
-        val body = parts.joinToString(" • ").ifBlank { "Order lifecycle update" }
-        val notification = NotificationCompat.Builder(context, ORDER_CHANNEL)
+        val body = parts.joinToString(" • ").ifBlank { "IPO Sentinel update" }
+        val channel = if (event.eventType in setOf("SIGNAL_READY", "SIGNAL_INVALIDATED", "STRATEGY_REVIEW")) SIGNAL_CHANNEL else ORDER_CHANNEL
+        val notification = NotificationCompat.Builder(context, channel)
             .setSmallIcon(
                 if (event.eventType in setOf("ORDER_REJECTED", "RISK_HALT"))
                     android.R.drawable.stat_notify_error

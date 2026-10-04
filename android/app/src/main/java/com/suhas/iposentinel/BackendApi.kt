@@ -221,36 +221,7 @@ data class ValidationStatus(
     val egressError: String? = null
 )
 
-data class ServiceProvisioningStatus(
-    val provisioned: Boolean,
-    val endpointConfigured: Boolean,
-    val deviceKeyConfigured: Boolean,
-    val message: String
-)
-
 class BackendApi {
-    private val baseUrl: String = BuildConfig.IPO_SENTINEL_API_URL.trim().trimEnd('/')
-    private val deviceKey: String = BuildConfig.IPO_SENTINEL_DEVICE_KEY.trim()
-
-    fun provisioningStatus(): ServiceProvisioningStatus {
-        val endpointConfigured = baseUrl.startsWith("https://")
-        val deviceKeyConfigured = deviceKey.isNotBlank()
-        val provisioned = endpointConfigured && deviceKeyConfigured
-        val message = when {
-            provisioned -> "Trading service endpoint and device authentication are configured."
-            !endpointConfigured && !deviceKeyConfigured ->
-                "This APK was built without the trading-service endpoint and device key."
-            !endpointConfigured -> "The trading-service HTTPS endpoint is missing or invalid."
-            else -> "The trading-service device key is missing."
-        }
-        return ServiceProvisioningStatus(
-            provisioned = provisioned,
-            endpointConfigured = endpointConfigured,
-            deviceKeyConfigured = deviceKeyConfigured,
-            message = message
-        )
-    }
-
     suspend fun saveGrowwSettings(
         totpToken: String,
         totpSecret: String,
@@ -740,61 +711,13 @@ class BackendApi {
 
     private suspend fun request(method: String, path: String, body: String?): ApiResult =
         withContext(Dispatchers.IO) {
-            val provisioning = provisioningStatus()
-            if (!provisioning.provisioned) {
-                return@withContext ApiResult(
-                    ok = false,
-                    statusCode = 0,
-                    body = "",
-                    error = provisioning.message
-                )
-            }
-            if (!baseUrl.startsWith("https://")) {
-                return@withContext ApiResult(
-                    ok = false,
-                    statusCode = 0,
-                    body = "",
-                    error = "Trading service configuration is invalid"
-                )
-            }
-
-            try {
-                val url = URL(baseUrl + path)
-                val connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = method
-                    connectTimeout = 8_000
-                    readTimeout = 15_000
-                    setRequestProperty("Accept", "application/json")
-                    if (deviceKey.isNotBlank()) {
-                        setRequestProperty("X-IPO-Sentinel-Device-Key", deviceKey)
-                    }
-                    if (body != null) {
-                        doOutput = true
-                        setRequestProperty("Content-Type", "application/json")
-                    }
-                }
-
-                if (body != null) {
-                    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                }
-
-                val code = connection.responseCode
-                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                val parsedError = if (code in 200..299) null else extractError(text)
-                connection.disconnect()
-                ApiResult(code in 200..299, code, text, parsedError)
-            } catch (exc: Exception) {
-                ApiResult(false, 0, "", exc.message ?: exc::class.java.simpleName)
-            }
+            // The legacy remote control plane is intentionally disabled in the direct
+            // Android build. Broker authentication is handled by DirectGrowwClient.
+            ApiResult(
+                ok = false,
+                statusCode = 0,
+                body = "",
+                error = "This legacy remote feature is not used in direct device mode."
+            )
         }
-
-    private fun extractError(body: String): String {
-        if (body.isBlank()) return "Trading service request failed"
-        return try {
-            JSONObject(body).optString("detail").ifBlank { body.take(300) }
-        } catch (_: Exception) {
-            body.take(300)
-        }
-    }
 }

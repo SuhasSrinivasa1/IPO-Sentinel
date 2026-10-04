@@ -3,9 +3,12 @@ name: Build IPO Sentinel Stable
 on:
   push:
     branches:
-      - feature/ipo-listing-engine-bootstrap
+      - main
     paths:
-      - "ipo-listing-engine/**"
+      - "android/**"
+      - "backend/**"
+      - "docs/**"
+      - "README.md"
       - ".github/workflows/ipo-sentinel-apk.yml"
   workflow_dispatch:
 
@@ -20,6 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Public repository secret-hygiene gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.private-signing/|\.(jks|keystore|p12|pfx)$|(^|/)(id_rsa|id_ed25519)$'; then
+            echo "Sensitive signing/key material is tracked. Refusing public release."
+            exit 1
+          fi
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -31,9 +43,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pip install --upgrade pip 2>&1 | tee ../../ipo-backend-validation.log
-          python -m pip install -e ".[dev]" 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pip install --upgrade pip 2>&1 | tee ../ipo-backend-validation.log
+          python -m pip install -e ".[dev]" 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Compile backend
         id: compile
@@ -41,8 +53,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m compileall -q app scripts tests 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m compileall -q app scripts tests 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Run backend tests
         id: tests
@@ -50,8 +62,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pytest -q 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pytest -q 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Dependency check
         id: deps
@@ -59,8 +71,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cd ipo-listing-engine/backend
-          python -m pip check 2>&1 | tee -a ../../ipo-backend-validation.log
+          cd backend
+          python -m pip check 2>&1 | tee -a ../ipo-backend-validation.log
 
       - name: Upload backend validation log
         if: always()
@@ -85,6 +97,7 @@ jobs:
           test "${{ steps.deps.outcome }}" = "success"
 
   build-apk:
+    needs: backend-test
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -92,7 +105,7 @@ jobs:
       IPO_SENTINEL_DEVICE_KEY: ${{ secrets.IPO_SENTINEL_DEVICE_KEY }}
     defaults:
       run:
-        working-directory: ipo-listing-engine/android
+        working-directory: android
 
     steps:
       - name: Checkout
@@ -131,6 +144,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: IPO-Sentinel-v1.1.0-FINAL
-          path: ipo-listing-engine/android/release/*
+          path: android/release/*
           if-no-files-found: error
           retention-days: 30

@@ -16,6 +16,7 @@ class ResearchScheduler:
     market_scan_job: Callable[..., None] | None = None
     daily_review_job: Callable[..., None] | None = None
     weekly_review_job: Callable[..., None] | None = None
+    order_monitor_job: Callable[..., None] | None = None
 
     def build(self) -> BackgroundScheduler:
         scheduler = BackgroundScheduler(timezone=IST)
@@ -111,6 +112,16 @@ class ResearchScheduler:
                 hour=17,
                 minute=0,
                 id="ipo_weekly_strategy_review",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+        if self.order_monitor_job is not None:
+            scheduler.add_job(
+                self.order_monitor_job,
+                trigger="interval",
+                seconds=30,
+                id="ipo_order_position_monitor_30s",
                 replace_existing=True,
                 max_instances=1,
                 coalesce=True,

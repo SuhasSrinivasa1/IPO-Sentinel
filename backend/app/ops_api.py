@@ -8,9 +8,17 @@ from .audit import audit_log
 from .connection_api import validate_connection
 from .connection_settings import require_device_key
 from .live_state import live_state_store
+from .execution_service import GrowwExecutionService
+from .live_pnl import live_ledger
 from .order_events import order_events
 
 router = APIRouter(tags=["operations"])
+
+
+class ManualCardOrderRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    action: str = Field(min_length=3, max_length=16)
+    fraction: float = Field(default=1.0, gt=0.0, le=1.0)
 
 
 class LiveStateRequest(BaseModel):
@@ -95,3 +103,42 @@ def get_order_events(after_id: int = 0, limit: int = 100) -> dict:
 def export_audit(days: int = Query(default=7, ge=1, le=31)) -> str:
     audit_log.append("AUDIT_EXPORT_REQUESTED", days=days)
     return audit_log.export(days)
+
+
+@router.post("/orders/manual", dependencies=[Depends(require_device_key)])
+def manual_card_order(payload: ManualCardOrderRequest) -> dict:
+    try:
+        response = GrowwExecutionService().manual_submit(
+            symbol=payload.symbol,
+            action=payload.action,
+            fraction=payload.fraction,
+        )
+        audit_log.append(
+            "MANUAL_CARD_ORDER_ACCEPTED",
+            symbol=payload.symbol.upper(),
+            action=payload.action.upper(),
+            fraction=payload.fraction,
+        )
+        return response
+    except (RuntimeError, ValueError) as exc:
+        audit_log.append(
+            "MANUAL_CARD_ORDER_REJECTED",
+            severity="WARN",
+            symbol=payload.symbol.upper(),
+            action=payload.action.upper(),
+            reason=str(exc),
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/pnl/ipo-sentinel", dependencies=[Depends(require_device_key)])
+def ipo_sentinel_pnl() -> dict:
+    state = live_state_store.load()
+    return {
+        "daily": live_ledger.daily_performance(
+            target_rupees=5_000,
+            capital_base=state.budget_rupees,
+        ),
+        "summary": live_ledger.summary(capital_base=state.budget_rupees),
+        "closed_calls": live_ledger.closed_calls(limit=200),
+    }

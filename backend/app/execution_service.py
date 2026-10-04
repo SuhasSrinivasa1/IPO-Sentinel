@@ -34,6 +34,7 @@ class ExecutionRequest:
     position_reconciled: bool = False
     order_state_known: bool = False
     position_isolation_ok: bool = False
+    manual: bool = False
 
 
 class GrowwExecutionService:
@@ -342,8 +343,15 @@ class GrowwExecutionService:
 
     def submit(self, request: ExecutionRequest) -> dict[str, Any]:
         state = live_state_store.load()
-        if not state.enabled:
+        if not state.enabled and not request.manual:
             raise RuntimeError("Live execution is disabled")
+        if state.enabled and not request.manual and not request.is_exit:
+            daily = live_ledger.daily_performance(
+                target_rupees=5_000,
+                capital_base=state.budget_rupees,
+            )
+            if daily.get("target_achieved"):
+                raise RuntimeError("DAILY_TARGET_REACHED: new automatic entries are paused")
         if request.quantity <= 0:
             raise ValueError("Quantity must be positive")
 
@@ -590,6 +598,8 @@ class GrowwExecutionService:
                     symbol=symbol,
                     side=side,
                     reference_id=reference_id,
+                    requested_quantity=request.quantity,
+                    is_exit=request.is_exit,
                 )
             except Exception as exc:
                 live_state_store.save(False, state.budget_rupees)
@@ -621,6 +631,7 @@ class GrowwExecutionService:
             segment=groww.SEGMENT_CASH,
         )
         status = str(response.get("order_status") or "").upper()
+        live_ledger.update_order_status(groww_order_id, status)
         filled = int(response.get("filled_quantity") or 0)
         average = response.get("average_fill_price")
         price = float(average) if average not in (None, "") else None
@@ -680,3 +691,196 @@ class GrowwExecutionService:
                 message=f"Partial fill {filled}/{quantity}",
             )
         return response
+
+
+    @staticmethod
+    def _extract_broker_position_quantity(payload: Any, symbol: str) -> int | None:
+        ticker = symbol.upper().strip()
+        def walk(node: Any) -> int | None:
+            if isinstance(node, dict):
+                node_symbol = str(
+                    node.get("trading_symbol")
+                    or node.get("symbol")
+                    or node.get("tradingSymbol")
+                    or ""
+                ).upper().strip()
+                if node_symbol == ticker:
+                    for key in ("quantity", "net_quantity", "net_carry_forward_quantity"):
+                        if key in node:
+                            try:
+                                return int(float(node.get(key) or 0))
+                            except (TypeError, ValueError):
+                                pass
+                for value in node.values():
+                    found = walk(value)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for value in node:
+                    found = walk(value)
+                    if found is not None:
+                        return found
+            return None
+        return walk(payload)
+
+    @staticmethod
+    def _has_uncertain_open_order(payload: Any, symbol: str) -> bool:
+        ticker = symbol.upper().strip()
+        active_statuses = {"OPEN", "PENDING", "NEW", "TRIGGER_PENDING", "AMO_PENDING", "PARTIAL"}
+        def walk(node: Any) -> bool:
+            if isinstance(node, dict):
+                node_symbol = str(
+                    node.get("trading_symbol")
+                    or node.get("symbol")
+                    or node.get("tradingSymbol")
+                    or ""
+                ).upper().strip()
+                status = str(node.get("order_status") or node.get("status") or "").upper().strip()
+                if node_symbol == ticker and status in active_statuses:
+                    return True
+                return any(walk(value) for value in node.values())
+            if isinstance(node, list):
+                return any(walk(value) for value in node)
+            return False
+        return walk(payload)
+
+    def _manual_broker_context(self, groww: Any, symbol: str) -> tuple[bool, bool]:
+        try:
+            orders = groww.get_order_list(segment=groww.SEGMENT_CASH, page=0, page_size=100)
+            order_state_known = not self._has_uncertain_open_order(orders, symbol)
+        except Exception:
+            order_state_known = False
+        try:
+            position = groww.get_position_for_trading_symbol(
+                trading_symbol=symbol,
+                segment=groww.SEGMENT_CASH,
+            )
+            broker_qty = self._extract_broker_position_quantity(position, symbol)
+        except Exception:
+            broker_qty = None
+        owned_qty = live_ledger.position_quantity(symbol)
+        position_isolation_ok = broker_qty is not None and broker_qty == owned_qty
+        return order_state_known, position_isolation_ok
+
+    @staticmethod
+    def _circuit_safe(quote: Any) -> bool:
+        source = GrowwExecutionService._quote_source(quote)
+        ltp = GrowwExecutionService._extract_ltp(quote)
+        try:
+            upper = float(source.get("upper_circuit_limit") or 0)
+            lower = float(source.get("lower_circuit_limit") or 0)
+        except (TypeError, ValueError):
+            return False
+        if min(ltp, upper, lower) <= 0 or not lower < ltp < upper:
+            return False
+        upper_distance = (upper / ltp - 1.0) * 100.0
+        lower_distance = (ltp / lower - 1.0) * 100.0
+        return min(upper_distance, lower_distance) >= 0.25
+
+    def manual_submit(self, *, symbol: str, action: str, fraction: float = 1.0) -> dict[str, Any]:
+        """
+        User-initiated card order. It may run while auto trading is OFF, but it never
+        bypasses static-IP, official identity, Groww instrument, book/liquidity, circuit,
+        broker-order or position-isolation gates.
+        """
+        ticker = symbol.upper().strip()
+        normalized = action.upper().strip()
+        if normalized not in {
+            "BUY", "SHORT", "SELL_25", "SELL_50", "SELL_ALL",
+            "COVER_25", "COVER_50", "COVER_ALL",
+        }:
+            raise ValueError("Unsupported manual card action")
+        fraction = max(0.01, min(1.0, float(fraction)))
+
+        now = self._now()
+        self._require_current_static_ip()
+        candidate, _plan = self._authorized_candidate(ticker, now)
+        groww = self._session().api
+        listing_date = date.fromisoformat(str(candidate.get("listing_date")))
+        instrument, quote, live_price = self._instrument_and_price(
+            groww,
+            ticker,
+            candidate,
+            now,
+            max_quote_age_seconds=15.0 if listing_date == now.date() else 30.0,
+        )
+        lot = max(1, int(float(instrument.get("lot_size") or 1)))
+        best = self._best_bid_ask(quote)
+        if best is None:
+            raise RuntimeError("WAIT_SPREAD_UNKNOWN: live bid/offer unavailable")
+        bid, ask = best
+        owned = live_ledger.position_quantity(ticker)
+        state = live_state_store.load()
+
+        is_exit = normalized.startswith("SELL_") or normalized.startswith("COVER_")
+        shortable = False
+        if normalized == "BUY":
+            side, product = "BUY", "CNC"
+            quantity = int((state.budget_rupees * fraction) // ask // lot) * lot
+            limit_price = ask
+        elif normalized == "SHORT":
+            if owned != 0:
+                raise RuntimeError("Fresh short requires the IPO Sentinel position to be flat")
+            side, product = "SELL", "MIS"
+            quantity = int((state.budget_rupees * fraction) // bid // lot) * lot
+            limit_price = bid
+            shortable = str(instrument.get("sell_allowed") or "").strip().lower() in {"1", "true", "yes"}
+        elif normalized.startswith("SELL_"):
+            if owned <= 0:
+                raise RuntimeError("There is no IPO Sentinel long position to sell")
+            side, product = "SELL", "CNC"
+            pct = {"SELL_25": 0.25, "SELL_50": 0.50, "SELL_ALL": 1.0}[normalized]
+            quantity = int((owned * pct) // lot) * lot
+            if normalized == "SELL_ALL":
+                quantity = owned
+            limit_price = bid
+        else:
+            if owned >= 0:
+                raise RuntimeError("There is no IPO Sentinel intraday short to cover")
+            side, product = "BUY", "MIS"
+            pct = {"COVER_25": 0.25, "COVER_50": 0.50, "COVER_ALL": 1.0}[normalized]
+            quantity = int((abs(owned) * pct) // lot) * lot
+            if normalized == "COVER_ALL":
+                quantity = abs(owned)
+            limit_price = ask
+            shortable = True
+
+        if quantity <= 0:
+            raise RuntimeError("Budget/position is below the minimum tradable lot")
+
+        order_state_known, isolation = self._manual_broker_context(groww, ticker)
+        impact = self._depth_impact_bps(quote, side=side, quantity=quantity)
+        spread = self._live_spread_bps(quote)
+        liquidity_ok = impact is not None and impact <= 75.0
+        if spread is None:
+            raise RuntimeError("WAIT_SPREAD_UNKNOWN: live spread unavailable")
+
+        tick = float(instrument.get("tick_size") or 0.05)
+        if tick > 0:
+            limit_price = round(round(limit_price / tick) * tick, 6)
+
+        response = self.submit(
+            ExecutionRequest(
+                symbol=ticker,
+                side=side,
+                quantity=quantity,
+                product=product,
+                order_type="LIMIT",
+                price=limit_price,
+                is_exit=is_exit,
+                shortable=shortable,
+                liquidity_sufficient=liquidity_ok,
+                spread_bps=spread,
+                estimated_impact_bps=impact,
+                circuit_state_acceptable=self._circuit_safe(quote),
+                position_reconciled=isolation,
+                order_state_known=order_state_known,
+                position_isolation_ok=isolation,
+                manual=True,
+            )
+        )
+        result = dict(response)
+        result["ipo_sentinel_manual_action"] = normalized
+        result["ipo_sentinel_quantity"] = quantity
+        result["ipo_sentinel_limit_price"] = limit_price
+        return result

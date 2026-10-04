@@ -13,6 +13,7 @@ from .post_listing_monitor import PostListingOpportunityEngine, PostListingSnaps
 from .live_pnl import live_ledger
 from .live_state import live_state_store
 from .ops_api import router as ops_router
+from .order_monitor import OrderPositionMonitor
 from .services import ExchangeCalendar, OwnedPositionRegistry, ShadowLedger
 from .strategy import ListingDecisionEngine
 from .strategy_api import router as strategy_router
@@ -36,11 +37,13 @@ research_service = bind_research_service(calendar)
 bind_research_api(research_service)
 research_intelligence = ResearchIntelligenceService(research_service)
 market_scanner = LiveOpportunityScanner(research_service)
+order_position_monitor = OrderPositionMonitor()
 research_scheduler = ResearchScheduler(
     research_service.refresh,
     market_scan_job=market_scanner.scan,
     daily_review_job=research_intelligence.review_day,
     weekly_review_job=research_intelligence.review_week,
+    order_monitor_job=order_position_monitor.run,
 ).build()
 
 

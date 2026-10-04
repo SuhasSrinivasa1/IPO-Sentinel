@@ -118,6 +118,8 @@ class AttributableLiveLedger:
         symbol: str,
         side: str,
         reference_id: str,
+        requested_quantity: int | None = None,
+        is_exit: bool = False,
     ) -> None:
         oid = order_id.strip()
         ticker = symbol.upper().strip()
@@ -145,6 +147,9 @@ class AttributableLiveLedger:
                 "reference_id": ref,
                 "cumulative_quantity": 0,
                 "average_price": 0.0,
+                "requested_quantity": int(requested_quantity or 0),
+                "is_exit": bool(is_exit),
+                "terminal_status": None,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             state["updated_at"] = orders[oid]["updated_at"]
@@ -255,6 +260,18 @@ class AttributableLiveLedger:
             state = self._read()
         raw = (state.get("positions") or {}).get(ticker) or {}
         return int(raw.get("quantity") or 0)
+
+    def pending_orders(self) -> list[dict[str, Any]]:
+        rows = []
+        for row in self.registered_orders():
+            requested = int(row.get("requested_quantity") or 0)
+            cumulative = int(row.get("cumulative_quantity") or 0)
+            terminal = str(row.get("terminal_status") or "").upper().strip()
+            if requested > 0 and cumulative < requested and terminal not in {
+                "EXECUTED", "COMPLETED", "DELIVERY_AWAITED", "REJECTED", "FAILED", "CANCELLED"
+            }:
+                rows.append(row)
+        return rows
 
     def registered_orders(self) -> list[dict[str, Any]]:
         with self._lock:

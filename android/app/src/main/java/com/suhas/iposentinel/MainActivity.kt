@@ -569,7 +569,7 @@ private fun ResearchScreen(
     ) {
         Text("Research", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Text(
-            "Tomorrow + D1-D30 IPO intelligence, signals, positions, outcomes and learning",
+            "Tomorrow + D1-D30 IPO discovery, exact symbol resolution and research ranking",
             color = Muted,
             fontSize = 13.sp
         )
@@ -621,7 +621,7 @@ private fun ResearchScreen(
                     fontSize = 12.sp
                 )
                 Text(
-                    "Calculated only from IPO Sentinel reconciled buy/sell fills. Groww account-level P&L and your other trades are excluded.",
+                    "Live order/P&L tracking is intentionally inactive in this direct research build; this section remains zero until an audited execution/reconciliation module is added.",
                     color = Muted,
                     fontSize = 11.sp,
                     lineHeight = 16.sp
@@ -916,7 +916,6 @@ private fun StrategiesScreen(modifier: Modifier) {
     var sourceMessage by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val client = remember { BackendApi() }
 
     fun refresh() {
         if (busy) return
@@ -1081,6 +1080,7 @@ private fun GrowwSettingsScreen(
     }
 
     LaunchedEffect(Unit) {
+        validation = client.lastValidation()
         val (result, value) = client.fetchStatus()
         if (result.ok && value != null) {
             status = value

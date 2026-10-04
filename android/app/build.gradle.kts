@@ -15,11 +15,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.suhas.iposentinel"
+        applicationId = "com.suhas.iposentinel.installfix"
         minSdk = 28
         targetSdk = 35
-        versionCode = 120
-        versionName = "1.2.0"
+        versionCode = 121
+        versionName = "1.2.1"
 
         buildConfigField(
             "String",

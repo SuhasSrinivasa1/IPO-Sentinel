@@ -188,3 +188,12 @@ This release keeps the v1.1.0 autonomous IPO research and exact-identity workflo
 - Daily after-market review records outcomes and weak strategy families. Sunday revalidation retains proven CHAMPION families and flags repeatedly negative families for rework/demotion.
 
 Live execution remains fail-closed: research may use broader discovery inputs, but no order is authorized from a guessed ticker, third-party symbol match, stale quote, unresolved Groww instrument, uncertain broker state or unrelated portfolio inventory.
+
+
+## v1.2.1 install-fix package
+
+This release intentionally uses Android applicationId `com.suhas.iposentinel.installfix`.
+It exists to bypass stale multi-user/work-profile package records for the earlier
+`com.suhas.iposentinel` debug-signed builds. Trading/research behavior is unchanged
+from v1.2.0. Future production releases should return to a stable package identity only
+after a persistent release-signing key is configured in CI.

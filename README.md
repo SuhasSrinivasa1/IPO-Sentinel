@@ -172,3 +172,19 @@ This release keeps the v1.1.0 autonomous IPO research and exact-identity workflo
 - Saving Groww settings now automatically triggers validation so readiness updates immediately.
 - Settings now displays explicit trading-service provisioning state (HTTPS endpoint and device authentication) instead of the ambiguous generic error.
 - Live trading still fails closed if the APK has not been built with a real HTTPS trading-service endpoint and device key. The application does not fabricate or fall back to direct device-side broker execution.
+
+
+## IPO intelligence and managed-trading release (v1.2.0)
+
+- Fresh installations seed the active universe from official NSE recent listings as well as current/forthcoming issues, then maintain the listing-day through D30 opportunity set.
+- The ₹5,000 daily objective is calculated only from IPO Sentinel's own reconciled broker fills. Groww account-level P&L and unrelated user holdings are excluded.
+- Exact NSE/Groww-resolved D1-D30 candidates are scanned each market minute using price/VWAP, relative volume, first-five-minute structure, spread, order-book quantities and circuit distance.
+- READY signals require an estimated post-cost edge of at least 0.5% of the configured budget and create Android signal notifications.
+- Research cards show direction, entry, T1/T2, stop, quantity, confidence, RVOL and reasons. Card BUY is CNC/delivery; fresh SHORT is MIS only.
+- Manual card orders work with auto mode OFF but still require static-IP, official identity, exact broker instrument, market-depth, circuit, order-state and position-isolation gates.
+- When auto mode is armed, guarded READY signals can submit entries. App-owned positions remain managed after entry; T1 can take one 50% partial and T2/stop can close the remainder.
+- IPO Sentinel registered orders and app-owned positions are reconciled every 30 seconds independently of the auto-entry switch.
+- The Android Research tab exposes Top 3, tomorrow's queue, active D1-D30 universe, signals, managed positions, partial exits, closed WIN/LOSS calls, daily objective progress and learning history.
+- Daily after-market review records outcomes and weak strategy families. Sunday revalidation retains proven CHAMPION families and flags repeatedly negative families for rework/demotion.
+
+Live execution remains fail-closed: research may use broader discovery inputs, but no order is authorized from a guessed ticker, third-party symbol match, stale quote, unresolved Groww instrument, uncertain broker state or unrelated portfolio inventory.

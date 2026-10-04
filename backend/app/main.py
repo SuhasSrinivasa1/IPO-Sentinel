@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from .audit import audit_log
 
 from .connection_api import router as connection_router
-from .domain import LiveFeatures
+from .domain import Action, LiveFeatures
 from .post_listing_monitor import PostListingOpportunityEngine, PostListingSnapshot
 from .live_pnl import live_ledger
 from .live_state import live_state_store
@@ -18,6 +18,7 @@ from .strategy import ListingDecisionEngine
 from .strategy_api import router as strategy_router
 from .research_api import router as research_router, bind_service as bind_research_api
 from .research_service import bind_research_service
+from .research_intelligence import LiveOpportunityScanner, ResearchIntelligenceService
 from .scheduler import ResearchScheduler
 
 app = FastAPI(title="IPO Sentinel", version="1.1.2")
@@ -33,7 +34,14 @@ engine = ListingDecisionEngine()
 post_listing_engine = PostListingOpportunityEngine()
 research_service = bind_research_service(calendar)
 bind_research_api(research_service)
-research_scheduler = ResearchScheduler(research_service.refresh).build()
+research_intelligence = ResearchIntelligenceService(research_service)
+market_scanner = LiveOpportunityScanner(research_service)
+research_scheduler = ResearchScheduler(
+    research_service.refresh,
+    market_scan_job=market_scanner.scan,
+    daily_review_job=research_intelligence.review_day,
+    weekly_review_job=research_intelligence.review_week,
+).build()
 
 
 @app.on_event("startup")
@@ -104,6 +112,8 @@ def health() -> dict:
         "live_execution": live_state_store.load().enabled,
         "calendar_ready": calendar.source_ready,
         "post_listing_monitor_days": 30,
+        "daily_profit_objective_rupees": 5_000,
+        "pnl_source": "IPO_SENTINEL_RECONCILED_FILLS_ONLY",
     }
 
 
@@ -139,6 +149,19 @@ def decision(payload: DecisionRequest) -> dict:
         data_fresh=payload.data_fresh,
     )
     result = engine.decide(features, payload.budget_rupees)
+    if result.action in {Action.PROBE_LONG, Action.BUILD_LONG, Action.PROBE_SHORT, Action.BUILD_SHORT}:
+        order_events.publish(
+            "SIGNAL_READY",
+            symbol=features.symbol,
+            side="BUY" if result.action in {Action.PROBE_LONG, Action.BUILD_LONG} else "SELL",
+            price=features.ltp,
+            message=f"{result.action.value} signal score {result.score}",
+            metadata={
+                "score": result.score,
+                "confidence": result.confidence,
+                "reason_codes": list(result.reason_codes),
+            },
+        )
     audit_log.append(
         "DECISION_EVALUATED",
         symbol=features.symbol,

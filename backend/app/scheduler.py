@@ -13,6 +13,9 @@ IST = ZoneInfo("Asia/Kolkata")
 @dataclass
 class ResearchScheduler:
     research_job: Callable[..., None]
+    market_scan_job: Callable[..., None] | None = None
+    daily_review_job: Callable[..., None] | None = None
+    weekly_review_job: Callable[..., None] | None = None
 
     def build(self) -> BackgroundScheduler:
         scheduler = BackgroundScheduler(timezone=IST)
@@ -76,6 +79,42 @@ class ResearchScheduler:
                     max_instances=1,
                     coalesce=True,
                 )
+        if self.market_scan_job is not None:
+            scheduler.add_job(
+                lambda: self.market_scan_job(trigger="minute_scan"),
+                trigger="cron",
+                day_of_week="mon-fri",
+                hour="9-15",
+                minute="*",
+                id="ipo_market_scan_each_minute",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+        if self.daily_review_job is not None:
+            scheduler.add_job(
+                self.daily_review_job,
+                trigger="cron",
+                day_of_week="mon-fri",
+                hour=16,
+                minute=20,
+                id="ipo_daily_learning_review",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+        if self.weekly_review_job is not None:
+            scheduler.add_job(
+                self.weekly_review_job,
+                trigger="cron",
+                day_of_week="sun",
+                hour=17,
+                minute=0,
+                id="ipo_weekly_strategy_review",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
         return scheduler
 
 

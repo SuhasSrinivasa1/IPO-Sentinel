@@ -735,8 +735,8 @@ private fun GrowwSettingsScreen(
         val (result, value) = client.fetchStatus()
         if (result.ok && value != null) {
             status = value
-            if (!value.expectedStaticIp.isNullOrBlank()) staticIp = value.expectedStaticIp
-            whitelistConfirmed = value.staticIpConfirmed
+            if (!value.expectedStaticIp.isNullOrBlank()) onStaticIpChange(value.expectedStaticIp)
+            onWhitelistConfirmedChange(value.staticIpConfirmed)
         }
     }
 

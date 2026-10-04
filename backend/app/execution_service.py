@@ -269,6 +269,16 @@ class GrowwExecutionService:
         if not candidate.get("symbol_resolved") or candidate.get("groww_resolution_status") != "RESOLVED":
             raise RuntimeError("Exact Groww NSE CASH instrument is not resolved")
 
+        identity_source = str(candidate.get("nse_source") or "").upper().strip()
+        if identity_source == "NSE_FORTHCOMING_LISTING":
+            if not plan.get("nse_forthcoming_source_ready"):
+                raise RuntimeError("Authoritative NSE forthcoming-listing source is not current")
+        elif identity_source == "NSE_RECENT_LISTING":
+            if not plan.get("nse_recent_source_ready"):
+                raise RuntimeError("Authoritative NSE recent-listing source is not current")
+        else:
+            raise RuntimeError("Candidate is not backed by an authoritative NSE listing identity source")
+
         holidays = {
             str(value)
             for value in plan.get("calendar_holidays", [])

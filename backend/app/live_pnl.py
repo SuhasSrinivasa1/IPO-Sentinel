@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -247,6 +248,148 @@ class AttributableLiveLedger:
             if changed:
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._write(state)
+
+    def position_quantity(self, symbol: str) -> int:
+        ticker = symbol.upper().strip()
+        with self._lock:
+            state = self._read()
+        raw = (state.get("positions") or {}).get(ticker) or {}
+        return int(raw.get("quantity") or 0)
+
+    def registered_orders(self) -> list[dict[str, Any]]:
+        with self._lock:
+            state = self._read()
+        rows: list[dict[str, Any]] = []
+        for order_id, raw in (state.get("orders") or {}).items():
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            row["order_id"] = order_id
+            rows.append(row)
+        return rows
+
+    def update_order_status(self, order_id: str, status: str) -> None:
+        with self._lock:
+            state = self._read()
+            order = (state.get("orders") or {}).get(order_id)
+            if not isinstance(order, dict):
+                return
+            order["terminal_status"] = status.upper().strip()
+            order["updated_at"] = datetime.now(timezone.utc).isoformat()
+            state["updated_at"] = order["updated_at"]
+            self._write(state)
+
+    def closed_calls(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """
+        Reconstruct flat-to-flat IPO Sentinel calls from the app's own reconciled fills.
+        Nothing from Groww account-level P&L or unrelated holdings enters this history.
+        """
+        with self._lock:
+            state = self._read()
+        fills = [item for item in (state.get("fills") or []) if isinstance(item, dict)]
+        fills.sort(key=lambda item: str(item.get("timestamp") or ""))
+
+        active: dict[str, dict[str, Any]] = {}
+        closed: list[dict[str, Any]] = []
+        for raw in fills:
+            symbol = str(raw.get("symbol") or "").upper().strip()
+            side = str(raw.get("side") or "").upper().strip()
+            qty = int(raw.get("quantity") or 0)
+            price = float(raw.get("price") or 0.0)
+            charge = float(raw.get("charges") or 0.0)
+            timestamp = str(raw.get("timestamp") or "")
+            if not symbol or side not in {"BUY", "SELL"} or qty <= 0 or price <= 0:
+                continue
+            signed = qty if side == "BUY" else -qty
+            current = active.get(symbol)
+            if current is None or int(current.get("quantity") or 0) == 0:
+                active[symbol] = {
+                    "quantity": signed,
+                    "avg_price": price,
+                    "entry_timestamp": timestamp,
+                    "entry_side": side,
+                    "charges": charge,
+                    "realized_gross": 0.0,
+                    "closed_quantity": 0,
+                }
+                continue
+
+            old_qty = int(current["quantity"])
+            old_avg = float(current["avg_price"])
+            current["charges"] = float(current.get("charges") or 0.0) + charge
+            if (old_qty > 0 and signed > 0) or (old_qty < 0 and signed < 0):
+                total = abs(old_qty) + abs(signed)
+                current["avg_price"] = (
+                    abs(old_qty) * old_avg + abs(signed) * price
+                ) / total
+                current["quantity"] = old_qty + signed
+                continue
+
+            close_qty = min(abs(old_qty), abs(signed))
+            realized = close_qty * (price - old_avg) if old_qty > 0 else close_qty * (old_avg - price)
+            current["realized_gross"] = float(current.get("realized_gross") or 0.0) + realized
+            current["closed_quantity"] = int(current.get("closed_quantity") or 0) + close_qty
+            new_qty = old_qty + signed
+            current["quantity"] = new_qty
+
+            if new_qty == 0:
+                gross = float(current.get("realized_gross") or 0.0)
+                charges = float(current.get("charges") or 0.0)
+                net = gross - charges
+                closed.append(
+                    {
+                        "symbol": symbol,
+                        "direction": "LONG" if str(current.get("entry_side")) == "BUY" else "SHORT",
+                        "quantity": int(current.get("closed_quantity") or 0),
+                        "entry_timestamp": current.get("entry_timestamp"),
+                        "exit_timestamp": timestamp,
+                        "entry_price": round(old_avg, 4),
+                        "exit_price": round(price, 4),
+                        "gross_pnl": round(gross, 2),
+                        "estimated_charges": round(charges, 2),
+                        "net_pnl": round(net, 2),
+                        "outcome": "WIN" if net > 0.01 else "LOSS" if net < -0.01 else "FLAT",
+                    }
+                )
+                active.pop(symbol, None)
+
+        return list(reversed(closed[-max(1, min(1000, int(limit))):]))
+
+    def daily_performance(
+        self,
+        *,
+        target_rupees: float = 5_000.0,
+        capital_base: float = 100_000.0,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        ist = ZoneInfo("Asia/Kolkata")
+        now = as_of.astimezone(ist) if as_of else datetime.now(ist)
+        calls = []
+        for call in self.closed_calls(limit=1000):
+            try:
+                exit_at = datetime.fromisoformat(str(call.get("exit_timestamp")).replace("Z", "+00:00"))
+                if exit_at.tzinfo is None:
+                    exit_at = exit_at.replace(tzinfo=timezone.utc)
+                if exit_at.astimezone(ist).date() == now.date():
+                    calls.append(call)
+            except (TypeError, ValueError):
+                continue
+        net = round(sum(float(call.get("net_pnl") or 0.0) for call in calls), 2)
+        target = max(0.0, float(target_rupees))
+        return {
+            "date": now.date().isoformat(),
+            "target_rupees": round(target, 2),
+            "realized_net_pnl": net,
+            "remaining_rupees": round(max(0.0, target - net), 2),
+            "target_achieved": bool(target > 0 and net >= target),
+            "capital_base": round(float(capital_base), 2),
+            "return_on_budget_pct": round(net / max(1.0, float(capital_base)) * 100.0, 4),
+            "closed_calls": len(calls),
+            "wins": sum(1 for call in calls if call.get("outcome") == "WIN"),
+            "losses": sum(1 for call in calls if call.get("outcome") == "LOSS"),
+            "source": "IPO_SENTINEL_RECONCILED_FILLS_ONLY",
+            "note": "Groww account-level P&L and unrelated holdings are intentionally excluded.",
+        }
 
     def summary(self, *, capital_base: float = 100_000.0) -> dict[str, Any]:
         with self._lock:

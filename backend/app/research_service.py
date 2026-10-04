@@ -23,6 +23,7 @@ NSE_UPCOMING = "/api/all-upcoming-issues?category=ipo"
 NSE_CURRENT = "/api/ipo-current-issue"
 NSE_HOLIDAYS = "/api/holiday-master?type=trading"
 NSE_FORTHCOMING = "/api/new-listing-today?index=ForthListing"
+NSE_RECENT = "/api/new-listing-today?index=RecentListing"
 GROWW_INSTRUMENT_CSV = "https://growwapi-assets.groww.in/instruments/instrument.csv"
 
 _BROWSER_HEADERS = {
@@ -264,6 +265,7 @@ class NseOfficialClient:
         )
         self._primed = False
         self.forthcoming_ready = False
+        self.recent_ready = False
 
     def close(self) -> None:
         self._client.close()
@@ -353,6 +355,28 @@ class NseOfficialClient:
             pass
 
         return records
+
+    def recent_listing_records(self) -> list[dict[str, Any]]:
+        """
+        Official recent-listing discovery used to seed a fresh installation with the
+        already-listed D1-D30 universe. It is research/identity data only; Groww
+        execution still requires exact NSE symbol/ISIN and broker-instrument agreement.
+        """
+        try:
+            payload = self.json(NSE_RECENT)
+            self.recent_ready = True
+        except Exception:
+            self.recent_ready = False
+            return []
+        cutoff = date.today() - timedelta(days=50)
+        rows: list[dict[str, Any]] = []
+        for item in _extract_forthcoming_records(payload):
+            listing = _parse_date(
+                _first(item, "listingDate", "dateOfListing", "date_of_listing", "date", "listing_date")
+            )
+            if listing and listing >= cutoff:
+                rows.append(item)
+        return rows
 
     def trading_holidays(self) -> set[date]:
         payload = self.json(NSE_HOLIDAYS)
@@ -555,6 +579,31 @@ class DailyResearchService:
                 except Exception as exc:
                     errors.append("GROWW_INSTRUMENT_MASTER:" + exc.__class__.__name__)
 
+                # Seed a fresh install with official recent listings as well as current/
+                # forthcoming issues, so the D1-D30 universe does not begin "tomorrow".
+                recent_rows = nse.recent_listing_records()
+                if not nse.recent_ready:
+                    errors.append("NSE_RECENT_LISTING:UNAVAILABLE")
+                if recent_rows:
+                    existing_keys: set[tuple[str, str, str]] = set()
+                    for raw, _source in raw_issues:
+                        existing_keys.add(
+                            (
+                                str(_first(raw, "symbol", "tradingSymbol", "securitySymbol") or "").upper().strip(),
+                                str(_first(raw, "isin", "isinCode") or "").upper().strip(),
+                                _norm_company(_first(raw, "companyName", "company", "issuerName", "securityName", "name")),
+                            )
+                        )
+                    for recent in recent_rows:
+                        key = (
+                            str(_first(recent, "symbol", "tradingSymbol", "securitySymbol") or "").upper().strip(),
+                            str(_first(recent, "isin", "isinCode") or "").upper().strip(),
+                            _norm_company(_first(recent, "companyName", "company", "issuerName", "securityName", "name")),
+                        )
+                        if key not in existing_keys:
+                            raw_issues.append((recent, "NSE_RECENT_LISTING"))
+                            existing_keys.add(key)
+
                 normalized = [self._candidate(item, source) for item, source in raw_issues]
 
                 next_trading_day = (
@@ -567,7 +616,7 @@ class DailyResearchService:
                 candidates: list[ResearchCandidate] = []
                 for item in normalized:
                     final_listing_confirmed = bool(
-                        item["nse_source"] == "NSE_FORTHCOMING_LISTING"
+                        item["nse_source"] in {"NSE_FORTHCOMING_LISTING", "NSE_RECENT_LISTING"}
                         and item["symbol"]
                         and item["listing_date"]
                     )
@@ -739,11 +788,20 @@ class DailyResearchService:
                     else "OK"
                 )
                 candidate_dicts = [asdict(candidate) for candidate in candidates]
+                recent_30d_candidates = [
+                    asdict(candidate)
+                    for candidate in candidates
+                    if candidate.trading_day_number is not None
+                    and 1 <= candidate.trading_day_number <= 30
+                    and candidate.nse_listing_confirmed
+                ]
                 payload = {
                     "generated_at": now.isoformat(),
                     "trigger": trigger,
                     "source_ready": source_ready,
-                    "nse_identity_source_ready": nse.forthcoming_ready,
+                    "nse_identity_source_ready": nse.forthcoming_ready or nse.recent_ready,
+                    "nse_forthcoming_source_ready": nse.forthcoming_ready,
+                    "nse_recent_source_ready": nse.recent_ready,
                     "research_health": research_health,
                     "calendar_ready": self.calendar.source_ready,
                     "calendar_holidays": sorted(day.isoformat() for day in self.calendar.holidays),
@@ -762,6 +820,10 @@ class DailyResearchService:
                             key=lambda c: (c.listing_date or "", c.symbol or "", c.company_name),
                         )
                     ],
+                    "recent_30d_candidates": sorted(
+                        recent_30d_candidates,
+                        key=lambda c: (int(c.get("trading_day_number") or 99), c.get("symbol") or ""),
+                    ),
                     "all_known_candidates": candidate_dicts,
                     "errors": errors,
                     "trade_gate": {

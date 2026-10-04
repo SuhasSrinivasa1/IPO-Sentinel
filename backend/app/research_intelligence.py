@@ -14,6 +14,7 @@ from .connection_api import store as groww_settings_store
 from .domain import Action, LiveFeatures
 from .groww_session import GrowwCredentials, GrowwSession
 from .live_pnl import live_ledger
+from .execution_service import GrowwExecutionService
 from .live_state import live_state_store
 from .order_events import order_events
 from .research_service import DailyResearchService
@@ -86,6 +87,38 @@ class SignalStore:
             if isinstance(value, dict) and value.get("status") == "READY"
         ]
         return sorted(rows, key=lambda row: (_float(row.get("confidence")), _float(row.get("score"))), reverse=True)
+
+    def get(self, symbol: str) -> dict[str, Any] | None:
+        ticker = symbol.upper().strip()
+        with self._lock:
+            state = self._read()
+        row = (state.get("signals") or {}).get(ticker)
+        return dict(row) if isinstance(row, dict) else None
+
+    def action_done(self, symbol: str, action: str) -> bool:
+        row = self.get(symbol) or {}
+        return action.upper().strip() in {
+            str(value).upper().strip()
+            for value in (row.get("managed_actions") or [])
+        }
+
+    def mark_action(self, symbol: str, action: str, order_id: str | None = None) -> None:
+        ticker = symbol.upper().strip()
+        normalized = action.upper().strip()
+        with self._lock:
+            state = self._read()
+            row = (state.get("signals") or {}).get(ticker)
+            if not isinstance(row, dict):
+                return
+            actions = [str(value) for value in (row.get("managed_actions") or [])]
+            if normalized not in {value.upper() for value in actions}:
+                actions.append(normalized)
+            row["managed_actions"] = actions
+            if order_id:
+                row.setdefault("managed_order_ids", []).append(order_id)
+            row["updated_at"] = datetime.now(timezone.utc).isoformat()
+            state["signals"][ticker] = row
+            self._write(state)
 
     def all_history(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:
@@ -287,6 +320,64 @@ class LiveOpportunityScanner:
                 if min(ltp, avg_price, bid, ask) <= 0:
                     signal_store.invalidate(symbol, "LIVE_PRICE_OR_BOOK_UNAVAILABLE")
                     continue
+
+                owned_qty = live_ledger.position_quantity(symbol)
+                existing_plan = signal_store.get(symbol)
+                if owned_qty != 0 and existing_plan:
+                    if live_state_store.load().enabled:
+                        stop = _float(existing_plan.get("stop_loss"))
+                        target1 = _float(existing_plan.get("target1"))
+                        target2 = _float(existing_plan.get("target2"))
+                        auto_action: str | None = None
+                        if owned_qty > 0:
+                            if stop > 0 and ltp <= stop:
+                                auto_action = "SELL_ALL"
+                            elif target2 > 0 and ltp >= target2:
+                                auto_action = "SELL_ALL"
+                            elif target1 > 0 and ltp >= target1 and not signal_store.action_done(symbol, "AUTO_T1"):
+                                auto_action = "SELL_50"
+                        else:
+                            if stop > 0 and ltp >= stop:
+                                auto_action = "COVER_ALL"
+                            elif target2 > 0 and ltp <= target2:
+                                auto_action = "COVER_ALL"
+                            elif target1 > 0 and ltp <= target1 and not signal_store.action_done(symbol, "AUTO_T1"):
+                                auto_action = "COVER_50"
+
+                        management_key = (
+                            "AUTO_STOP_OR_T2" if auto_action in {"SELL_ALL", "COVER_ALL"} else
+                            "AUTO_T1" if auto_action else None
+                        )
+                        if auto_action and management_key and not signal_store.action_done(symbol, management_key):
+                            try:
+                                response = GrowwExecutionService().manual_submit(
+                                    symbol=symbol,
+                                    action=auto_action,
+                                    manual=False,
+                                )
+                                signal_store.mark_action(
+                                    symbol,
+                                    management_key,
+                                    str(response.get("groww_order_id") or "") or None,
+                                )
+                                order_events.publish(
+                                    "STRATEGY_REVIEW",
+                                    symbol=symbol,
+                                    message=f"Auto position management submitted {auto_action}",
+                                    metadata={"action": auto_action, "ltp": ltp},
+                                )
+                            except Exception as exc:
+                                audit_log.append(
+                                    "AUTO_POSITION_MANAGEMENT_BLOCKED",
+                                    severity="WARN",
+                                    symbol=symbol,
+                                    action=auto_action,
+                                    reason=str(exc),
+                                )
+                    # A filled position is managed as a position, not discarded because the
+                    # original entry signal later weakens.
+                    continue
+
                 spread_bps = (ask - bid) / ((ask + bid) / 2.0) * 10_000.0
                 buy_qty, sell_qty = self._depth_totals(source)
                 current_volume = _float(source.get("volume"))
@@ -393,6 +484,37 @@ class LiveOpportunityScanner:
                         message=f"{direction} signal • T1 ₹{target1:.2f} • T2 ₹{target2:.2f} • SL ₹{stop:.2f}",
                         metadata=signal,
                     )
+
+                state = live_state_store.load()
+                daily = live_ledger.daily_performance(
+                    target_rupees=5_000,
+                    capital_base=state.budget_rupees,
+                )
+                if (
+                    state.enabled
+                    and not daily.get("target_achieved")
+                    and live_ledger.position_quantity(symbol) == 0
+                    and not signal_store.action_done(symbol, "AUTO_ENTRY")
+                ):
+                    try:
+                        response = GrowwExecutionService().manual_submit(
+                            symbol=symbol,
+                            action="BUY" if direction == "LONG" else "SHORT",
+                            manual=False,
+                        )
+                        signal_store.mark_action(
+                            symbol,
+                            "AUTO_ENTRY",
+                            str(response.get("groww_order_id") or "") or None,
+                        )
+                    except Exception as exc:
+                        audit_log.append(
+                            "AUTO_SIGNAL_ORDER_BLOCKED",
+                            severity="WARN",
+                            symbol=symbol,
+                            direction=direction,
+                            reason=str(exc),
+                        )
             except Exception as exc:
                 audit_log.append(
                     "MARKET_SCAN_CANDIDATE_FAILED",

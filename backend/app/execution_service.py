@@ -777,7 +777,14 @@ class GrowwExecutionService:
         lower_distance = (ltp / lower - 1.0) * 100.0
         return min(upper_distance, lower_distance) >= 0.25
 
-    def manual_submit(self, *, symbol: str, action: str, fraction: float = 1.0) -> dict[str, Any]:
+    def manual_submit(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        fraction: float = 1.0,
+        manual: bool = True,
+    ) -> dict[str, Any]:
         """
         User-initiated card order. It may run while auto trading is OFF, but it never
         bypasses static-IP, official identity, Groww instrument, book/liquidity, circuit,
@@ -876,7 +883,7 @@ class GrowwExecutionService:
                 position_reconciled=isolation,
                 order_state_known=order_state_known,
                 position_isolation_ok=isolation,
-                manual=True,
+                manual=manual,
             )
         )
         result = dict(response)

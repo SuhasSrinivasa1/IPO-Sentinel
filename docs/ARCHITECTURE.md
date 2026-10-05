@@ -1,111 +1,125 @@
-# IPO Sentinel Architecture — v1.3.3
+# IPO Sentinel Architecture — v1.4.0
 
-## Principle
+## Core rule
 
-IPO Sentinel v1.3.3 uses one shared Android state model. Research discovery, durable recommendation calls, broker reconciliation, recovery triggers, and UI state converge through `AppStateRepository`. Automatic execution remains disabled.
-
-## Runtime graph
+Research, signal generation, replay evidence and broker state are different layers. A research candidate is never promoted to a Call merely because its symbol was discovered.
 
 ```text
-                   AppStateRepository
-                         |
-        -------------------------------------
-        |                |                  |
- DirectGrowwClient DirectResearchClient CallLedgerStore
-        |                |                  |
- Keystore/TOTP      NSE/source cache    durable calls
-        |                |                  |
-        ----------- BrokerTruthClient -------
-                         |
-             Groww order list + positions
-                         |
-                RecoveryCoordinator
-                         |
-     ------------------------------------------------
-     |          |          |          |             |
- listener     boot      app open   WorkManager    manual
- reconnect                           periodic     reconcile
-                         |
-      Home • Calls • Research • Strategy • Settings
+NSE discovery / identity
+        |
+DirectResearchClient
+        |
+READY_FOR_RESEARCH
+        |
+exact NSE ↔ Groww identity
+        |
+DirectMarketDataClient ----> local compressed OHLCV archive
+        |
+AdaptiveStrategyEngine
+        |
+timestamped SignalDecision
+        |
+CallLedgerStore
+        |
+LIVE <-------------------------------> CLOSED
+        |
+broker truth / candle reconciliation
 ```
 
-## Durable call semantics
+`AppStateRepository` is the shared application state consumed by Calls, Research, Strategies and System.
 
-A `RecommendationCall` persists independently of the activity, Compose state, notification listener, or process lifetime. It includes first recommendation, update, research-source, broker-reconciliation, and close timestamps.
+## Calls-first UX
 
-The call ledger is written to local application storage. Research refreshes update qualifying calls but do not close them when NSE is degraded/cached. A normal healthy research refresh may retire calls that genuinely leave the active research universe.
+The first/default bottom tab is **Calls**. A top TabRow switches between **LIVE** and **CLOSED**.
 
-Broker reconciliation may close a call when the app previously observed a non-zero matching broker position and a later authoritative Groww positions response reports it flat.
+The call list is intentionally information-dense:
+- official NSE symbol;
+- verified identity status;
+- signal/close time in IST;
+- strategy;
+- entry/stop/targets;
+- current or realized return;
+- expandable strategy evidence and broker reconciliation.
 
-## Recovery contract
+Research candidates live exclusively in the Research tab.
 
-The system assumes Android/OEM process death can occur at any point.
+## Signal evidence
 
-Recovery triggers are deliberately redundant:
+A signal requires:
+1. final NSE listing identity;
+2. exact Groww NSE/CASH mapping;
+3. real 5-minute OHLCV candles;
+4. a composite strategy threshold.
 
-1. `BrokerNotificationListenerService.onListenerConnected`;
-2. Groww notification posted;
-3. `BOOT_COMPLETED`;
-4. `MY_PACKAGE_REPLACED`;
-5. application startup;
-6. network-constrained periodic WorkManager work;
-7. user-triggered reconciliation.
+The engine records point-in-time inputs used by the signal: candle pattern, volume ratio, VWAP, VWAP distance, ATR, opening range, NIFTY relative strength, listing gap when issue price is parseable, subscription multiple, board and trading-day number.
 
-All triggers invoke the same serialized `RecoveryCoordinator`. A short debounce prevents notification bursts from causing excessive broker reads.
+No future candle is used in a live signal decision.
 
-The notification listener is a **wake source only**. Notification text is not used as authoritative order/fill/position state. Broker truth is fetched directly using Groww's read-only order list and positions endpoints.
+## Strategy architecture
 
-## Groww session and broker truth
+The five v1.4.0 strategies are combinations:
+- Listing Momentum Consensus;
+- VWAP Reclaim + Absorption;
+- Breakout Retest Continuation;
+- Compression → Expansion;
+- Relative Strength Continuation.
 
-`DirectGrowwClient` owns encrypted credentials, local TOTP generation, encrypted access tokens, public-IP validation, and connection readiness.
+`StrategyEvidenceStore` owns evidence. Static strategy definitions do not imply success.
 
-`BrokerTruthClient` uses direct HTTPS and reads:
+Evidence statuses:
+- CHAMPION: >=20 replay trades + expectancy/PF/drawdown thresholds;
+- CHALLENGER: >=10 trades + positive expectancy + PF threshold;
+- LEARNING: insufficient evidence.
 
-- CASH order list;
-- CASH positions.
+## Shadow replay
 
-A recent encrypted access token is reused; 401/403 broker responses force one re-authentication and retry. Broker snapshots are themselves persisted so UI/audit can display the last reconciliation status even after process restart.
+`ShadowReplayEngine` iterates historical candles sequentially. At each replay bar, the strategy engine sees only candles up to that bar. Exits are simulated only from subsequent candles.
 
-No order placement, modification, or cancellation is performed by the recovery path.
+When a stop and target are both contained within the same candle and tick ordering is unavailable, replay chooses STOP. This is intentionally conservative.
 
-## Research identity boundary
+Missed-opportunity analysis records sessions with >=4% subsequent upside and no emitted strategy signal, together with contemporaneous blockers.
 
-```text
-DISCOVERED
-  -> IDENTITY_VERIFIED
-  -> GROWW_SYMBOL_VERIFIED
-  -> READY_FOR_RESEARCH
-```
+## Candle archive
 
-Exact NSE/CASH broker identity is required before a research candidate enters the call ledger. Fuzzy company-name matching cannot authorize a broker symbol.
+All successfully fetched Groww OHLCV is grouped by symbol/date and stored under app-private storage as compressed JSON. The archive is evidence, not a public cache.
 
-Research still covers listing-day/upcoming candidates and D1-D30 Mainboard/SME names. Without live market evidence the app uses WAIT LIVE CONFIRMATION semantics rather than inventing entries, stops, targets, or confidence.
+This supports:
+- post-mortem reconstruction;
+- repeatable feature extraction;
+- future strategy-regression tests;
+- reduced dependence on source availability at audit time.
 
-## NSE source state
+## Daily learning schedule
 
-NSE source health is independent from call state. The client caches last-known-good source payloads and marks each source FRESH, CACHED, or FAILED. Transient 403/429/HTML challenge behavior therefore degrades research freshness without erasing durable recommendations.
+Two WorkManager loops complement the foreground app:
+- network-constrained market scan every 15 minutes;
+- daily off-market research/shadow replay targeting an initial 18:45 IST run, repeating every 24 hours.
 
-## Android lifecycle integration
+The foreground app scans every five minutes while open. Worker timing remains best-effort because Android/OEM schedulers may defer background work.
 
-The manifest declares:
+## Research source health
 
-- INTERNET;
-- POST_NOTIFICATIONS;
-- RECEIVE_BOOT_COMPLETED;
-- `BrokerNotificationListenerService` bound through `BIND_NOTIFICATION_LISTENER_SERVICE`;
-- `RecoveryBootReceiver`;
-- FileProvider.
+The NSE direct client keeps each source independently FRESH, CACHED or FAILED. Cached discovery/identity can keep known identities visible, but it cannot itself create a signal.
 
-WorkManager schedules a network-constrained 30-minute reconciliation. This is not a guarantee of exact wall-clock execution under OEM power management; it is a persistence/retry mechanism combined with listener, boot, app-open, and manual recovery triggers.
+This distinction is critical when NSE challenges the device with 403/HTML responses.
 
-## Execution boundary
+## Broker truth / OEM recovery
 
-`ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false. v1.3.3 is a recommendation + reconciliation release, not an auto-trading release.
+`BrokerNotificationListenerService` is a wake source. It does not parse notification text as authoritative fill state.
 
-A future execution implementation must add safe placement, idempotent client references, order-state reconciliation, fill handling, position ownership, risk controls, and restart-safe pending actions beneath this same shared architecture.
+`RecoveryCoordinator` re-reads Groww order list and CASH positions and reconciles durable calls. Recovery is scheduled through listener reconnect, boot/package replacement, app open, periodic WorkManager and user refresh.
 
-## Audit and CI
+`LiveSignalScanner` also catches up outstanding signal calls by retrieving the signal-date candle history, so an OEM-killed process can reconstruct stop/target/session-close outcomes after restart.
 
-Weekly audit export includes call-ledger and broker-truth status in addition to application and source-health logs, while excluding credentials/tokens.
+## Data not yet promoted into strategy gates
 
-CI validates version 1.3.3, direct HTTPS architecture, notification/boot recovery declarations, WorkManager recovery, durable timestamps, Groww broker-read endpoints, locked execution, no active legacy BackendApi polling, lint, Kotlin compilation, APK assembly, and SHA-256 generation.
+Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.0 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
+
+The architecture can add a future `PointInTimeContextProvider` beneath the replay engine once such a source is available.
+
+## Security and execution
+
+`ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false.
+
+v1.4.0 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
+

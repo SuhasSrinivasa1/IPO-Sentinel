@@ -121,6 +121,26 @@ object CompositeStrategyCatalog {
     fun definition(id: String): CompositeStrategyDefinition? = definitions.firstOrNull { it.id == id }
 }
 
+data class ShadowHoldPolicy(
+    val label: String,
+    val maxTradingSessions: Int
+)
+
+object ShadowExecutionPolicy {
+    const val ACCOUNT_CAPITAL_RUPEES = 100_000.0
+    const val MAX_POSITION_RUPEES = 25_000.0
+    const val RISK_PER_TRADE_RUPEES = 1_000.0
+
+    fun holdFor(strategyId: String?): ShadowHoldPolicy = when (strategyId) {
+        "listing_momentum_consensus" -> ShadowHoldPolicy("INTRADAY", 1)
+        "vwap_reclaim_absorption" -> ShadowHoldPolicy("1-2 DAYS", 2)
+        "breakout_retest_continuation" -> ShadowHoldPolicy("UP TO 5 DAYS", 5)
+        "compression_expansion" -> ShadowHoldPolicy("UP TO 10 DAYS", 10)
+        "relative_strength_continuation" -> ShadowHoldPolicy("UP TO 20 DAYS", 20)
+        else -> ShadowHoldPolicy("INTRADAY", 1)
+    }
+}
+
 class AdaptiveStrategyEngine {
     fun evaluateBest(
         candidate: ResearchCandidate,

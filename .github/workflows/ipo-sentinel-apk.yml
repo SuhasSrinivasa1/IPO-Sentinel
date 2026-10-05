@@ -1,4 +1,4 @@
-name: Build IPO Sentinel v1.4.1
+name: Build IPO Sentinel v1.4.2
 
 on:
   push:
@@ -118,8 +118,8 @@ jobs:
             app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
           )
 
-          grep -n 'versionCode = 141' app/build.gradle.kts
-          grep -n 'versionName = "1.4.1"' app/build.gradle.kts
+          grep -n 'versionCode = 142' app/build.gradle.kts
+          grep -n 'versionName = "1.4.2"' app/build.gradle.kts
           grep -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
           grep -n 'AppScreen.CALLS' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n 'CallsMode.LIVE' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
@@ -128,6 +128,12 @@ jobs:
           grep -n 'Groww " + call.growwSymbol' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n 'Identity pending' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n 'definition.ingredients.joinToString' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+          grep -n 'SHADOW P&L' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+          grep -n 'CLOSED P&L' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+          grep -n 'ACCOUNT_CAPITAL_RUPEES = 100_000.0' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt
+          grep -n 'relative_strength_continuation.*20' app/src/test/java/com/suhas/iposentinel/AdaptiveStrategyEngineTest.kt || grep -n 'assertEquals(20, ShadowExecutionPolicy.holdFor("relative_strength_continuation")' app/src/test/java/com/suhas/iposentinel/AdaptiveStrategyEngineTest.kt
+          grep -n 'shadow_pnl_rupees' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
+          grep -n 'realised_pnl' app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
           grep -n '/v1/historical/candles' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class CandleArchiveStore' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class ShadowReplayEngine' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt
@@ -142,7 +148,7 @@ jobs:
           grep -n 'compression_expansion' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt
           grep -n 'relative_strength_continuation' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt
           grep -n 'groww == "NSE-" + nse' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt
-          grep -n 'ACTIVE SHADOW CALL' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
+          grep -n 'ACTIVE SHADOW' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
           grep -n 'migrateLegacyResearchRows' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
           grep -n 'liveExecutionReady = false' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
           grep -n 'BIND_NOTIFICATION_LISTENER_SERVICE' app/src/main/AndroidManifest.xml
@@ -185,17 +191,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.4.1-PRO-debug.apk
-          test -s release/IPO-Sentinel-v1.4.1-PRO-debug.apk
-          sha256sum release/IPO-Sentinel-v1.4.1-PRO-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.4.2-PRO-debug.apk
+          test -s release/IPO-Sentinel-v1.4.2-PRO-debug.apk
+          sha256sum release/IPO-Sentinel-v1.4.2-PRO-debug.apk > release/SHA256SUMS.txt
           cat release/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.4.1-PRO
+          name: IPO-Sentinel-v1.4.2-PRO
           path: |
-            android/release/IPO-Sentinel-v1.4.1-PRO-debug.apk
+            android/release/IPO-Sentinel-v1.4.2-PRO-debug.apk
             android/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

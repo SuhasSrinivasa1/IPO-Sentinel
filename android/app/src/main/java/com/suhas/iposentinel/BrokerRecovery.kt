@@ -29,7 +29,8 @@ data class BrokerOrderTruth(
 data class BrokerPositionTruth(
     val tradingSymbol: String,
     val netQuantity: Int,
-    val averagePrice: Double?
+    val averagePrice: Double?,
+    val realisedPnl: Double? = null
 )
 
 data class BrokerTruthSnapshot(
@@ -168,7 +169,14 @@ class BrokerTruthClient(context: Context) {
                         if (obj.has(key) && !obj.isNull(key)) obj.optDouble(key) else null
                     }
 
-                add(BrokerPositionTruth(symbol, net, avg))
+                add(
+                    BrokerPositionTruth(
+                        tradingSymbol = symbol,
+                        netQuantity = net,
+                        averagePrice = avg,
+                        realisedPnl = obj.optNullableDouble("realised_pnl")
+                    )
+                )
             }
         }
     }
@@ -225,7 +233,8 @@ class BrokerTruthStore(context: Context) {
                             BrokerPositionTruth(
                                 tradingSymbol = row.optString("trading_symbol"),
                                 netQuantity = row.optInt("net_quantity", 0),
-                                averagePrice = if (row.isNull("average_price")) null else row.optDouble("average_price")
+                                averagePrice = if (row.isNull("average_price")) null else row.optDouble("average_price"),
+                                realisedPnl = if (row.isNull("realised_pnl")) null else row.optDouble("realised_pnl")
                             )
                         )
                     }
@@ -259,6 +268,7 @@ class BrokerTruthStore(context: Context) {
                     .put("trading_symbol", row.tradingSymbol)
                     .put("net_quantity", row.netQuantity)
                     .put("average_price", row.averagePrice)
+                    .put("realised_pnl", row.realisedPnl)
             )
         }
         val json = JSONObject()

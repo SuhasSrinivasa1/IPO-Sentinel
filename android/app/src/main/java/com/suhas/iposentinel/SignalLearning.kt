@@ -124,9 +124,16 @@ class LiveSignalScanner(context: Context) {
             }
             val growwSymbol = call.growwSymbol ?: continue
             val nseSymbol = call.symbol ?: continue
-            val series = market.fetchSessionCandles(growwSymbol, signalDate)
-            if (series.candles.isNotEmpty()) {
-                ledger.reconcileMarketCandles(nseSymbol, series.candles)
+            val series = if (signalDate.isBefore(now.toLocalDate())) {
+                market.fetchRange(growwSymbol, signalDate, now.toLocalDate())
+            } else {
+                market.fetchSessionCandles(growwSymbol, signalDate)
+            }
+            val closedCandles = series.candles.filter {
+                !it.timestamp.isAfter(Instant.now().minusSeconds(5L * 60L))
+            }
+            if (closedCandles.isNotEmpty()) {
+                ledger.reconcileMarketCandles(nseSymbol, closedCandles)
             }
         }
     }
@@ -217,7 +224,13 @@ class ShadowReplayEngine(context: Context) {
                 if (candles.size < 7) continue
                 sessions += 1
                 val benchmarkDay = benchmarkByDate[date].orEmpty()
-                val dayTrades = replaySession(candidate, date, candles, benchmarkDay)
+                val dayTrades = replaySession(
+                    candidate = candidate,
+                    date = date,
+                    candles = candles,
+                    benchmark = benchmarkDay,
+                    allSymbolCandles = series.candles
+                )
                 allTrades += dayTrades
 
                 if (dayTrades.isEmpty()) {
@@ -262,7 +275,8 @@ class ShadowReplayEngine(context: Context) {
         candidate: ResearchCandidate,
         date: LocalDate,
         candles: List<MarketCandle>,
-        benchmark: List<MarketCandle>
+        benchmark: List<MarketCandle>,
+        allSymbolCandles: List<MarketCandle>
     ): List<ReplayTrade> {
         val emitted = mutableSetOf<String>()
         val trades = mutableListOf<ReplayTrade>()
@@ -277,7 +291,7 @@ class ShadowReplayEngine(context: Context) {
                     candidate = candidate,
                     date = date,
                     signal = signal,
-                    future = candles.subList(i + 1, candles.size)
+                    future = allSymbolCandles.filter { it.timestamp.isAfter(Instant.parse(signal.signalAt)) }
                 )
             }
             if (emitted.size == CompositeStrategyCatalog.definitions.size) break
@@ -292,12 +306,24 @@ class ShadowReplayEngine(context: Context) {
         future: List<MarketCandle>
     ): ReplayTrade {
         val entry = signal.entryPrice
-        var exit = future.lastOrNull()?.close ?: entry
-        var reason = "SESSION_CLOSE"
+        val policy = ShadowExecutionPolicy.holdFor(signal.strategyId)
+        val signalDate = Instant.parse(signal.signalAt).atZone(IST).toLocalDate()
+        val allowedDates = (listOf(signalDate) + future.map { it.timestamp.atZone(IST).toLocalDate() })
+            .distinct()
+            .take(policy.maxTradingSessions)
+            .toSet()
+        val relevantFuture = future.filter { it.timestamp.atZone(IST).toLocalDate() in allowedDates }
+
+        var exit = relevantFuture.lastOrNull()?.close ?: entry
+        var reason = if (policy.maxTradingSessions == 1) {
+            "SESSION_CLOSE"
+        } else {
+            "MAX_HOLD_" + policy.maxTradingSessions + "_SESSIONS"
+        }
         var maxHigh = entry
         var minLow = entry
 
-        for (candle in future) {
+        for (candle in relevantFuture) {
             maxHigh = max(maxHigh, candle.high)
             minLow = min(minLow, candle.low)
             val hitStop = candle.low <= signal.stopLoss

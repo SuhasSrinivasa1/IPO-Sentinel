@@ -26,8 +26,7 @@ object AppAudit {
                 .put("timestamp", Instant.now().toString())
                 .put("event_type", eventType)
                 .put("payload", payload)
-            file.appendText(record.toString() + "
-")
+            file.appendText(record.toString() + "\\n")
         }
     }
 

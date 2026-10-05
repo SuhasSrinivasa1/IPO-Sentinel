@@ -67,18 +67,32 @@ class LiveSignalScanner(context: Context) {
             if (series.candles.size < 7) continue
             evaluated += 1
 
-            val before = ledger.load().count { it.state == "LIVE" }
+            val beforeIds = ledger.load().filter { it.state == "LIVE" }.map { it.callId }.toSet()
             val decision = engine.evaluateBest(candidate, series.candles, benchmark.candles)
             if (decision != null) {
                 signals += 1
-                ledger.upsertSignal(candidate, decision)
+                val call = ledger.upsertSignal(candidate, decision)
+                if (call.callId !in beforeIds && call.state == "LIVE") {
+                    newCalls += 1
+                    NotificationHelper.showOrderEvent(
+                        appContext,
+                        OrderLifecycleEvent(
+                            id = System.currentTimeMillis(),
+                            timestamp = call.recommendedAt,
+                            eventType = "SIGNAL_READY",
+                            symbol = call.symbol,
+                            side = call.direction,
+                            price = call.entryPrice,
+                            message = (call.strategyName ?: "Composite strategy") +
+                                " • score " + String.format("%.0f", call.signalScore ?: 0.0)
+                        )
+                    )
+                }
             }
             ledger.reconcileMarketCandles(
                 nseSymbol = candidate.symbol ?: growwSymbol.substringAfter("NSE-"),
                 candles = series.candles
             )
-            val after = ledger.load().count { it.state == "LIVE" }
-            if (after > before) newCalls += (after - before)
         }
 
         return SignalScanSummary(

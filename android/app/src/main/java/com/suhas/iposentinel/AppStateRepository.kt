@@ -25,6 +25,7 @@ data class AppState(
     val replaySummary: ReplayRunSummary? = null,
     val strategySummary: StrategySummary = LocalStrategyCatalog.summary(),
     val tradeReviewSettings: TradeReviewSettings = TradeReviewSettings(),
+    val liveTradingReadiness: GrowwTradingReadiness? = null,
     val lastValidatedAtMillis: Long? = null,
     val lastError: String? = null
 ) {
@@ -87,7 +88,8 @@ class AppStateRepository private constructor(context: Context) {
             replaySummary = strategyStore.lastReplay(),
             calls = callLedger.load(),
             brokerTruth = brokerStore.load(),
-            tradeReviewSettings = tradeReviewStore.load()
+            tradeReviewSettings = tradeReviewStore.load(),
+            liveTradingReadiness = null
         )
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -141,9 +143,11 @@ class AppStateRepository private constructor(context: Context) {
             }
 
             val broker = RecoveryCoordinator.reconcile(appContext, "APP_OPEN", force = true)
+            val readiness = tradeReviewGateway.readiness()
             _state.value = _state.value.copy(
                 calls = callLedger.load(),
-                brokerTruth = broker ?: brokerStore.load()
+                brokerTruth = broker ?: brokerStore.load(),
+                liveTradingReadiness = readiness
             )
 
             val activePlan = plan ?: cachedPlan
@@ -255,6 +259,32 @@ class AppStateRepository private constructor(context: Context) {
                 .put("blockers", org.json.JSONArray(result.blockers))
         )
         return result
+    }
+
+    suspend fun refreshLiveTradingReadiness() = mutex.withLock {
+        _state.value = _state.value.copy(isRefreshing = true, lastError = null)
+        val (validationResult, validation) = groww.validate()
+        val readiness = tradeReviewGateway.readiness()
+        _state.value = _state.value.copy(
+            validation = validation?.copy(liveExecutionReady = false) ?: _state.value.validation,
+            liveTradingReadiness = readiness,
+            lastValidatedAtMillis = groww.lastValidationAtMillis(),
+            isRefreshing = false,
+            lastError = readiness.brokerMessage ?: if (validationResult.ok) null else validationResult.error
+        )
+        AppAudit.log(
+            appContext,
+            "GROWW_TRADING_READINESS",
+            org.json.JSONObject()
+                .put("broker_ready", readiness.brokerReady)
+                .put("groww_auth_ok", readiness.growwAuthOk)
+                .put("static_ip_matches", readiness.staticIpMatches)
+                .put("static_ip_confirmed", readiness.staticIpConfirmed)
+                .put("nse_enabled", readiness.nseEnabled)
+                .put("cash_segment_enabled", readiness.cashSegmentEnabled)
+                .put("ddpi_enabled", readiness.ddpiEnabled)
+                .put("blockers", org.json.JSONArray(readiness.blockers))
+        )
     }
 
     suspend fun validateGrowwAndStaticIp() = mutex.withLock {

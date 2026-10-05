@@ -1,6 +1,9 @@
 package com.suhas.iposentinel
 
 import android.content.Context
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +37,31 @@ data class AppState(
 
     val closedCalls: List<RecommendationCall>
         get() = calls.filter { it.state == "CLOSED" }.sortedByDescending { it.closedAt ?: it.lastUpdatedAt }
+
+    private val todayIst: LocalDate
+        get() = LocalDate.now(ZoneId.of("Asia/Kolkata"))
+
+    val todayClosedCalls: List<RecommendationCall>
+        get() = closedCalls.filter { call ->
+            call.closedAt?.let { at ->
+                runCatching { Instant.parse(at).atZone(ZoneId.of("Asia/Kolkata")).toLocalDate() == todayIst }
+                    .getOrDefault(false)
+            } == true
+        }
+
+    val todayClosedShadowPnlRupees: Double
+        get() = todayClosedCalls.sumOf { it.shadowPnlRupees }
+
+    val todayOpenShadowPnlRupees: Double
+        get() = liveCalls
+            .filter { it.shadowSessionPnlDate == todayIst.toString() }
+            .sumOf { it.shadowSessionPnlRupees }
+
+    val todayShadowPnlRupees: Double
+        get() = todayOpenShadowPnlRupees + todayClosedShadowPnlRupees
+
+    val brokerRealisedPnlRupees: Double?
+        get() = brokerTruth?.takeIf { it.error == null }?.positions?.sumOf { it.realisedPnl ?: 0.0 }
 
     val executionReady: Boolean
         get() = false

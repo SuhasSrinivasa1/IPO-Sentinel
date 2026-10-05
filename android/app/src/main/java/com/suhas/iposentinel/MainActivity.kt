@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -1154,6 +1155,48 @@ private fun SystemScreen(
             SystemLine("Live order submission", "LOCKED OFF", Negative)
         }
 
+        FlatSection("Groww live-trading readiness") {
+            val readiness = state.liveTradingReadiness
+            SystemLine(
+                "Broker environment",
+                when {
+                    readiness == null -> "NOT CHECKED"
+                    readiness.brokerReady -> "READY"
+                    else -> "BLOCKED"
+                },
+                when {
+                    readiness?.brokerReady == true -> Positive
+                    readiness == null -> TextSecondary
+                    else -> Warning
+                }
+            )
+            ValidationLine("Groww API / TOTP", readiness?.growwAuthOk == true)
+            ValidationLine("Static IP matches", readiness?.staticIpMatches == true)
+            ValidationLine("Static IP confirmed", readiness?.staticIpConfirmed == true)
+            ValidationLine("NSE trading enabled", readiness?.nseEnabled == true)
+            ValidationLine("CASH segment active", readiness?.cashSegmentEnabled == true)
+            ValidationLine("DDPI enabled", readiness?.ddpiEnabled == true)
+            readiness?.blockers?.takeIf { it.isNotEmpty() }?.let {
+                Text(
+                    "Blockers: " + it.joinToString(", "),
+                    color = Warning,
+                    fontSize = 10.sp
+                )
+            }
+            OutlinedButton(
+                onClick = { scope.launch { repository.refreshLiveTradingReadiness() } },
+                enabled = !state.isRefreshing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (state.isRefreshing) "Checking…" else "Refresh broker readiness")
+            }
+            Text(
+                "This readiness check uses Groww's authenticated user profile plus the app's current static-IP validation. It does not submit an order.",
+                color = TextSecondary,
+                fontSize = 10.sp
+            )
+        }
+
         FlatSection("Trade review") {
             SystemLine("Execution mode", "MANUAL BROKER CONFIRMATION", Info)
             SystemLine(
@@ -1182,7 +1225,20 @@ private fun SystemScreen(
                 color = TextSecondary,
                 fontSize = 11.sp
             )
-            SystemLine("Auto buy / auto sell", "DISABLED", Negative)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Auto buy", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("Live order submission unavailable in this build", color = TextSecondary, fontSize = 9.sp)
+                }
+                Switch(checked = false, onCheckedChange = null, enabled = false)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Auto sell", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("Live order submission unavailable in this build", color = TextSecondary, fontSize = 9.sp)
+                }
+                Switch(checked = false, onCheckedChange = null, enabled = false)
+            }
             Text(
                 "The app does not call Groww order-create, modify or cancel endpoints. It produces a broker-ready intent for explicit confirmation instead.",
                 color = TextSecondary,

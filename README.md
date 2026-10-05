@@ -1,13 +1,13 @@
 # IPO Sentinel
 
-IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.4 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
+IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.5 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
 
 ## Current release target
 
-- Version: **1.4.4**
-- Version code: **144**
+- Version: **1.4.5**
+- Version code: **145**
 - Android application ID: `com.suhas.iposentinel.installfix`
-- Artifact: `IPO-Sentinel-v1.4.4-PRO-debug.apk`
+- Artifact: `IPO-Sentinel-v1.4.5-PRO-debug.apk`
 - Compile / target SDK: 35
 - Java: 17
 - Automatic real-money execution: **LOCKED OFF**
@@ -150,7 +150,7 @@ Once an IPO identity has been exactly resolved, intraday signal generation is dr
 
 ## Fundamentals and news boundary
 
-v1.4.4 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
+v1.4.5 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
 
 Those features require a reliable timestamped source with point-in-time availability. Adding present-day news/fundamentals retrospectively to old candles would contaminate shadow replay with hindsight, so the app fails closed rather than manufacturing that context.
 
@@ -201,13 +201,19 @@ The release workflow verifies the Calls-first architecture, five strategy IDs, d
 
 ## Groww live-trading readiness
 
-v1.4.4 queries Groww's authenticated user profile and combines it with the app's current connection validation. The System tab reports Groww API/TOTP status, static-IP match, static-IP confirmation, NSE trading enablement, CASH segment enablement and DDPI status. The weekly audit records the same readiness state and blockers.
+v1.4.5 queries Groww's authenticated user profile and combines it with the app's current connection validation. The System tab reports Groww API/TOTP status, static-IP match, static-IP confirmation, NSE trading enablement, CASH segment enablement and DDPI status. The weekly audit records the same readiness state and blockers.
 
 These checks make broker prerequisites explicit, but securities-order submission remains outside this build. Auto-buy and auto-sell controls are shown disabled so the UI cannot imply that a live order will be sent when it will not.
 
+## Live Review Mode and Groww handoff
+
+v1.4.5 adds a persisted **Live Review Mode** setting. When enabled, tapping a LIVE call's confidence badge runs the full Groww preflight (identity, price freshness, budget, available balance and required margin). If the intent is broker-ready, IPO Sentinel opens the official Groww Android application (`com.nextbillion.groww`) for the final broker confirmation. If the preflight is blocked, Groww is not opened and the exact blocker remains visible in IPO Sentinel.
+
+The order review dialog also includes an explicit **Open Groww** action for ready intents and retains **Copy** for the immutable order summary. No securities order is submitted by IPO Sentinel.
+
 ## Live broker order review
 
-v1.4.4 adds an in-app `TradeReviewGateway` between a strategy call and Groww. It is a read-only pre-trade layer.
+v1.4.5 adds an in-app `TradeReviewGateway` between a strategy call and Groww. It is a read-only pre-trade layer.
 
 From a LIVE call, tapping the confidence percentage:
 - derives the exact NSE trading symbol from the verified call identity;

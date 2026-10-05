@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -26,12 +28,15 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,7 +70,7 @@ private val Danger = Color(0xFFFF6B6B)
 private val Muted = Color(0xFF9AA7B3)
 private val Amber = Color(0xFFFFC857)
 
-private enum class AppScreen { DASHBOARD, RESEARCH, STRATEGIES, SETTINGS }
+private enum class AppScreen { DASHBOARD, CALLS, RESEARCH, STRATEGIES, SETTINGS }
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
@@ -79,6 +85,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NotificationHelper.createChannels(this)
+        RecoveryScheduler.ensureScheduled(this)
         AppAudit.log(this, "APP_STARTED", JSONObject().put("version", BuildConfig.VERSION_NAME))
 
         if (
@@ -100,14 +107,13 @@ private fun IpoSentinelApp() {
     val state by repository.state.collectAsState()
     var screen by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
 
-    LaunchedEffect(Unit) {
-        repository.initialize()
-    }
+    LaunchedEffect(Unit) { repository.initialize() }
 
     LaunchedEffect(Unit) {
         while (true) {
             delay(30L * 60L * 1000L)
             repository.refreshResearch(force = true)
+            repository.refreshBrokerTruth(force = false)
         }
     }
 
@@ -124,51 +130,31 @@ private fun IpoSentinelApp() {
             containerColor = Ink,
             bottomBar = {
                 NavigationBar(containerColor = Surface) {
-                    NavigationBarItem(
-                        selected = screen == AppScreen.DASHBOARD,
-                        onClick = { screen = AppScreen.DASHBOARD },
-                        icon = { Text("●") },
-                        label = { Text("Dashboard") }
-                    )
-                    NavigationBarItem(
-                        selected = screen == AppScreen.RESEARCH,
-                        onClick = { screen = AppScreen.RESEARCH },
-                        icon = { Text("◆") },
-                        label = { Text("Research") }
-                    )
-                    NavigationBarItem(
-                        selected = screen == AppScreen.STRATEGIES,
-                        onClick = { screen = AppScreen.STRATEGIES },
-                        icon = { Text("▲") },
-                        label = { Text("Strategies") }
-                    )
-                    NavigationBarItem(
-                        selected = screen == AppScreen.SETTINGS,
-                        onClick = { screen = AppScreen.SETTINGS },
-                        icon = { Text("⚙") },
-                        label = { Text("Settings") }
-                    )
+                    NavItem(screen, AppScreen.DASHBOARD, "●", "Home") { screen = AppScreen.DASHBOARD }
+                    NavItem(screen, AppScreen.CALLS, "☎", "Calls") { screen = AppScreen.CALLS }
+                    NavItem(screen, AppScreen.RESEARCH, "◆", "Research") { screen = AppScreen.RESEARCH }
+                    NavItem(screen, AppScreen.STRATEGIES, "▲", "Strategy") { screen = AppScreen.STRATEGIES }
+                    NavItem(screen, AppScreen.SETTINGS, "⚙", "Settings") { screen = AppScreen.SETTINGS }
                 }
             }
         ) { padding ->
             when (screen) {
-                AppScreen.DASHBOARD -> DashboardScreen(
-                    modifier = Modifier.padding(padding),
-                    state = state
+                AppScreen.DASHBOARD -> DashboardScreen(Modifier.padding(padding), state)
+                AppScreen.CALLS -> CallsScreen(
+                    Modifier.padding(padding),
+                    state,
+                    onRefresh = { repository.refreshBrokerTruth(force = true) }
                 )
                 AppScreen.RESEARCH -> ResearchScreen(
-                    modifier = Modifier.padding(padding),
-                    state = state,
+                    Modifier.padding(padding),
+                    state,
                     onRefresh = { repository.refreshResearch(force = true) }
                 )
-                AppScreen.STRATEGIES -> StrategiesScreen(
-                    modifier = Modifier.padding(padding),
-                    state = state
-                )
+                AppScreen.STRATEGIES -> StrategiesScreen(Modifier.padding(padding), state)
                 AppScreen.SETTINGS -> SettingsScreen(
-                    modifier = Modifier.padding(padding),
-                    state = state,
-                    repository = repository
+                    Modifier.padding(padding),
+                    state,
+                    repository
                 )
             }
         }
@@ -176,16 +162,30 @@ private fun IpoSentinelApp() {
 }
 
 @Composable
+private fun RowScope.NavItem(
+    current: AppScreen,
+    target: AppScreen,
+    icon: String,
+    label: String,
+    onClick: () -> Unit
+) {
+    NavigationBarItem(
+        selected = current == target,
+        onClick = onClick,
+        icon = { Text(icon) },
+        label = { Text(label, fontSize = 10.sp) }
+    )
+}
+
+@Composable
 private fun DashboardScreen(modifier: Modifier, state: AppState) {
     val plan = state.researchPlan
-    val active30 = plan?.allKnownCandidates.orEmpty()
-        .count { (it.tradingDayNumber ?: 0) in 1..30 }
-    val failedSources = state.researchSources.filter { it.status == "FAILED" }
-    val cachedSources = state.researchSources.filter { it.usingCachedData }
+    val active30 = plan?.allKnownCandidates.orEmpty().count { (it.tradingDayNumber ?: 0) in 1..30 }
+    val cachedSources = state.researchSources.count { it.usingCachedData }
 
     ScreenColumn(modifier) {
         Text("IPO Sentinel", fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        Text("Unified direct research architecture • NSE + Groww", color = Muted)
+        Text("Durable calls • broker-truth recovery • NSE + Groww", color = Muted)
 
         if (state.isRefreshing) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -195,97 +195,153 @@ private fun DashboardScreen(modifier: Modifier, state: AppState) {
         }
 
         StatusCard(
-            title = "Groww Connection",
-            primary = when {
+            "Calls",
+            state.liveCalls.size.toString() + " LIVE • " + state.closedCalls.size + " CLOSED",
+            "Every recommendation is persisted with its first recommendation timestamp and update/close timestamps.",
+            if (state.liveCalls.isNotEmpty()) Teal else Muted
+        )
+
+        StatusCard(
+            "Groww Connection",
+            when {
                 state.growwConnectionReady -> "READY"
                 state.connectionStatus?.growwConfigured == true -> "NEEDS VALIDATION"
                 else -> "NOT CONFIGURED"
             },
-            secondary = when {
-                state.growwConnectionReady -> "Authentication + configured static-IP checks passed."
-                state.connectionStatus?.growwConfigured == true -> "Credentials saved. Validation is required."
-                else -> "Save Groww TOTP credentials and static IP in Settings."
+            "Execution remains locked. Groww is used for authentication and read-only broker reconciliation.",
+            if (state.growwConnectionReady) Teal else Amber
+        )
+
+        StatusCard(
+            "Broker Truth Recovery",
+            when {
+                state.brokerTruth == null -> "NOT SYNCED"
+                state.brokerTruth.error == null -> "SYNCED"
+                else -> "ATTENTION"
             },
-            primaryColor = if (state.growwConnectionReady) Teal else Amber
-        )
-
-        StatusCard(
-            title = "Static IP",
-            primary = when {
-                state.validation?.staticIpMatches == true -> "MATCHED"
-                state.validation?.detectedEgressIp != null -> "MISMATCH / NOT READY"
-                else -> "NOT CHECKED"
+            buildString {
+                append("Last: ")
+                append(state.brokerTruth?.fetchedAt ?: "—")
+                append("\nTrigger: ")
+                append(state.brokerTruth?.trigger ?: "—")
+                append("\nOrders: ")
+                append(state.brokerTruth?.orders?.size ?: 0)
+                append(" • Positions: ")
+                append(state.brokerTruth?.positions?.size ?: 0)
+                state.brokerTruth?.error?.let { append("\n").append(it) }
             },
-            secondary = "Detected: " + (state.validation?.detectedEgressIp ?: "—") +
-                "\nExpected: " + (state.validation?.expectedStaticIp ?: state.connectionStatus?.expectedStaticIp ?: "—"),
-            primaryColor = if (state.validation?.staticIpMatches == true) Teal else Amber
+            if (state.brokerTruth?.error == null && state.brokerTruth != null) Teal else Amber
         )
 
         StatusCard(
-            title = "NSE Research Sources",
-            primary = plan?.researchHealth ?: "NOT SYNCED",
-            secondary = when {
-                plan == null -> "Research state has not been hydrated yet."
-                failedSources.isNotEmpty() -> failedSources.joinToString("\n") {
-                    it.name + ": unavailable" + (it.error?.let { e -> " (" + e + ")" } ?: "")
-                }
-                cachedSources.isNotEmpty() -> cachedSources.joinToString("\n") {
-                    it.name + ": cached from " + (it.lastSuccessAt ?: "previous success")
-                }
-                else -> "Official discovery, listing identity and calendar sources are available."
-            },
-            primaryColor = if (plan?.researchHealth == "OK") Teal else Amber
+            "NSE Research",
+            plan?.researchHealth ?: "NOT SYNCED",
+            "Known " + (plan?.candidateCount ?: 0) +
+                " • Groww resolved " + (plan?.growwResolvedCount ?: 0) +
+                " • Cached sources " + cachedSources,
+            if (plan?.researchHealth == "OK") Teal else Amber
         )
 
         StatusCard(
-            title = "Next Trading Day",
-            primary = plan?.nextTradingDay ?: "UNKNOWN",
-            secondary = if (plan?.calendarReady == true) {
-                "Calculated with the official NSE cash-market calendar."
-            } else {
-                "Calendar source unavailable; weekday fallback is informational only."
-            },
-            primaryColor = if (plan?.calendarReady == true) Teal else Amber
-        )
-
-        val nextCount = plan?.nextTradingDayCandidates?.size ?: 0
-        StatusCard(
-            title = "Next IPO Candidates",
-            primary = nextCount.toString(),
-            secondary = when {
-                plan == null -> "Not synced."
-                !plan.sourceReady && nextCount == 0 -> "Source unavailable/degraded. This is not interpreted as “no IPOs”."
-                nextCount == 0 -> "Available sources returned zero candidates for the next trading day."
-                else -> "Candidates flow through official identity and exact Groww symbol verification."
-            },
-            primaryColor = if (plan?.sourceReady == true) Teal else Amber
+            "D1–D30 Research Universe",
+            active30.toString(),
+            "Mainboard and SME. A research candidate becomes a live call only after official identity + exact Groww NSE/CASH resolution.",
+            Teal
         )
 
         StatusCard(
-            title = "D1–D30 Active Universe",
-            primary = active30.toString(),
-            secondary = "Mainboard and SME listings remain research-only until live confirmation exists.",
-            primaryColor = Teal
-        )
-
-        StatusCard(
-            title = "Groww Symbol Resolution",
-            primary = (plan?.growwResolvedCount ?: 0).toString() + " resolved",
-            secondary = (plan?.growwPendingCount ?: 0).toString() + " official identities still pending exact NSE/CASH match.",
-            primaryColor = if ((plan?.growwPendingCount ?: 0) == 0) Teal else Amber
-        )
-
-        StatusCard(
-            title = "Live Execution",
-            primary = "LOCKED OFF",
-            secondary = "No automatic real-money orders. Direct order placement, reconciliation, fill tracking, ownership isolation and complete risk controls are not implemented.",
-            primaryColor = Danger
+            "Live Execution",
+            "LOCKED OFF",
+            "No automatic real-money orders. Recovery observes broker truth but does not place, modify or cancel orders.",
+            Danger
         )
 
         state.lastValidatedAtMillis?.let {
-            Text("Last Groww validation: " + Instant.ofEpochMilli(it).toString(), color = Muted, fontSize = 12.sp)
+            Text("Last Groww validation: " + Instant.ofEpochMilli(it), color = Muted, fontSize = 12.sp)
         }
-        state.lastError?.let { Text(it, color = Danger) }
+        state.lastError?.let { Text(it, color = Danger, fontSize = 12.sp) }
+    }
+}
+
+@Composable
+private fun CallsScreen(
+    modifier: Modifier,
+    state: AppState,
+    onRefresh: suspend () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    ScreenColumn(modifier) {
+        Text("Calls", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("One durable ledger for live and closed recommendations.", color = Muted)
+
+        Button(
+            onClick = { scope.launch { onRefresh() } },
+            enabled = !state.isRefreshing,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (state.isRefreshing) "Reconciling…" else "Reconcile From Groww Now")
+        }
+
+        Text("Live calls (" + state.liveCalls.size + ")", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        if (state.liveCalls.isEmpty()) {
+            Text(
+                "No live calls yet. The app will not manufacture a trade call from stale or incomplete market evidence.",
+                color = Muted
+            )
+        } else {
+            state.liveCalls.forEach { CallCard(it) }
+        }
+
+        HorizontalDivider()
+        Text("Closed calls (" + state.closedCalls.size + ")", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        if (state.closedCalls.isEmpty()) {
+            Text("No closed calls recorded yet.", color = Muted)
+        } else {
+            state.closedCalls.forEach { CallCard(it) }
+        }
+
+        Text(
+            "Recovery rule: call state is stored before process death. Listener reconnect, boot/package restart, app open, periodic work, and manual refresh trigger broker reconciliation. Notifications are wake hints; Groww orders/positions are authoritative.",
+            color = Muted,
+            fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+private fun CallCard(call: RecommendationCall) {
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(call.symbol ?: call.companyName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(call.companyName + " • " + call.board, color = Muted, fontSize = 12.sp)
+                }
+                Text(
+                    call.state,
+                    color = if (call.state == "LIVE") Teal else Muted,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Text(call.action, color = Amber, fontWeight = FontWeight.SemiBold)
+            Text("Recommended: " + call.recommendedAt, color = Muted, fontSize = 11.sp)
+            Text("Updated: " + call.lastUpdatedAt, color = Muted, fontSize = 11.sp)
+            call.sourceGeneratedAt?.let { Text("Research snapshot: " + it, color = Muted, fontSize = 11.sp) }
+            if (call.brokerOrderId != null || call.brokerPositionQuantity != null) {
+                Text(
+                    "Broker: " + (call.brokerOrderStatus ?: "no order state") +
+                        " • Position " + (call.brokerPositionQuantity ?: 0) +
+                        (call.brokerAveragePrice?.let { " @ ₹" + String.format("%.2f", it) } ?: ""),
+                    color = Teal,
+                    fontSize = 12.sp
+                )
+                call.lastBrokerReconciledAt?.let {
+                    Text("Broker checked: " + it, color = Muted, fontSize = 11.sp)
+                }
+            }
+            call.closedAt?.let { Text("Closed: " + it, color = Muted, fontSize = 11.sp) }
+            call.closeReason?.let { Text("Close reason: " + it.replace("_", " "), color = Muted, fontSize = 11.sp) }
+        }
     }
 }
 
@@ -297,49 +353,44 @@ private fun ResearchScreen(
 ) {
     val scope = rememberCoroutineScope()
     val plan = state.researchPlan
-    val active30 = plan?.allKnownCandidates.orEmpty()
-        .filter { (it.tradingDayNumber ?: 0) in 1..30 }
+    val active30 = plan?.allKnownCandidates.orEmpty().filter { (it.tradingDayNumber ?: 0) in 1..30 }
 
     ScreenColumn(modifier) {
         Text("Research", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Official discovery → identity → Groww instrument → research", color = Muted)
+        Text("Official discovery → identity → Groww instrument → timestamped call ledger", color = Muted)
 
         Button(
             onClick = { scope.launch { onRefresh() } },
-            enabled = !state.isRefreshing
+            enabled = !state.isRefreshing,
+            modifier = Modifier.fillMaxWidth()
         ) {
             Text(if (state.isRefreshing) "Refreshing…" else "Refresh Direct Research")
         }
+
+        Text("Research timestamp: " + (plan?.generatedAt ?: "not available"), color = Muted, fontSize = 12.sp)
 
         Text("Source health", fontWeight = FontWeight.Bold)
         if (state.researchSources.isEmpty()) {
             Text("No source status recorded yet.", color = Muted)
         } else {
             state.researchSources.forEach { source ->
-                SourceHealthCard(source)
+                StatusCard(
+                    source.name,
+                    source.status,
+                    "Last success: " + (source.lastSuccessAt ?: "—") +
+                        (source.error?.let { "\n" + it } ?: ""),
+                    if (source.status == "FRESH") Teal else Amber
+                )
             }
         }
 
-        Text("Next trading day: " + (plan?.nextTradingDay ?: "unknown"), fontWeight = FontWeight.Bold)
-        CandidateSection(
-            title = "Next listing candidates",
-            candidates = plan?.nextTradingDayCandidates.orEmpty(),
-            sourceReady = plan?.sourceReady == true
-        )
+        CandidateSection("Next listing candidates", plan?.nextTradingDayCandidates.orEmpty(), plan?.generatedAt)
+        CandidateSection("D1–D30 active universe", active30, plan?.generatedAt)
 
-        CandidateSection(
-            title = "D1–D30 active universe",
-            candidates = active30,
-            sourceReady = plan?.sourceReady == true
-        )
-
-        if (plan?.errors?.isNotEmpty() == true) {
-            Text("Research diagnostics", fontWeight = FontWeight.Bold)
-            plan.errors.forEach { Text("• " + it, color = Amber, fontSize = 12.sp) }
-        }
+        plan?.errors?.forEach { Text("• " + it, color = Amber, fontSize = 12.sp) }
 
         Text(
-            "All candidates are WATCH / RESEARCH / WAIT LIVE CONFIRMATION. No entry, stop, target, win rate or live confidence is manufactured.",
+            "Research cards do not assert live entry, stop, target, confidence or win rate. Calls remain WAIT LIVE CONFIRMATION until real live evidence exists.",
             color = Muted,
             fontSize = 12.sp
         )
@@ -350,82 +401,52 @@ private fun ResearchScreen(
 private fun CandidateSection(
     title: String,
     candidates: List<ResearchCandidate>,
-    sourceReady: Boolean
+    generatedAt: String?
 ) {
     Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
     if (candidates.isEmpty()) {
-        Text(
-            if (sourceReady) "No candidates returned by available sources." else "Candidate availability unknown because one or more required sources are unavailable.",
-            color = if (sourceReady) Muted else Amber
-        )
+        Text("No candidates currently available from the research snapshot.", color = Muted)
     } else {
-        candidates.forEach { CandidateCard(it) }
-    }
-}
-
-@Composable
-private fun CandidateCard(candidate: ResearchCandidate) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(candidate.companyName, fontWeight = FontWeight.Bold)
-            Text(
-                (candidate.symbol ?: "NSE symbol pending") + " • " +
-                    (if (candidate.isSme) "SME" else "MAINBOARD") + " • " +
-                    (candidate.listingDate ?: "listing date pending"),
-                color = Muted
-            )
-            Text(candidate.lifecycleState, color = Teal, fontWeight = FontWeight.Bold)
-            Text("Groww: " + candidate.growwResolutionStatus, color = Muted, fontSize = 12.sp)
-            candidate.isin?.let { Text("ISIN: " + it, color = Muted, fontSize = 12.sp) }
-            candidate.tradingDayNumber?.let { Text("Trading day D" + it, color = Muted, fontSize = 12.sp) }
-            Text("WATCH • RESEARCH • WAIT LIVE CONFIRMATION", color = Amber, fontSize = 12.sp)
-        }
-    }
-}
-
-@Composable
-private fun SourceHealthCard(source: ResearchSourceStatus) {
-    val color = when (source.status) {
-        "FRESH" -> Teal
-        "CACHED" -> Amber
-        else -> Danger
-    }
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Text(source.name, fontWeight = FontWeight.Bold)
-            Text(source.status, color = color)
-            if (source.usingCachedData) {
-                Text("Using cached data from " + (source.lastSuccessAt ?: "last successful refresh"), color = Muted, fontSize = 12.sp)
+        candidates.forEach { candidate ->
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(candidate.companyName, fontWeight = FontWeight.Bold)
+                    Text(
+                        (candidate.growwSymbol ?: candidate.symbol ?: "symbol pending") + " • " +
+                            (if (candidate.isSme) "SME" else "MAINBOARD") + " • " +
+                            (candidate.listingDate ?: "listing pending"),
+                        color = Muted
+                    )
+                    Text(candidate.lifecycleState, color = Teal, fontWeight = FontWeight.Bold)
+                    Text(candidate.resolutionStatus.replace("_", " "), color = Amber, fontSize = 12.sp)
+                    Text("Research timestamp: " + (generatedAt ?: "—"), color = Muted, fontSize = 11.sp)
+                }
             }
-            source.error?.let { Text(it, color = Muted, fontSize = 12.sp) }
         }
     }
 }
 
 @Composable
 private fun StrategiesScreen(modifier: Modifier, state: AppState) {
-    val summary = state.strategySummary
     ScreenColumn(modifier) {
         Text("Strategies", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Catalog availability is separate from evidence.", color = Muted)
-
-        StatusCard(
-            title = "Strategy Catalog",
-            primary = summary.totalStrategyFamilies.toString() + " families",
-            secondary = "Tested: " + summary.testedFamilies +
-                " • Champions: " + summary.champions +
-                " • Untested: " + summary.untestedFamilies,
-            primaryColor = Teal
+        Text(
+            state.strategySummary.totalStrategyFamilies.toString() + " families • " +
+                state.strategySummary.testedFamilies + " tested • " +
+                state.strategySummary.champions + " champions",
+            color = Muted
         )
-
-        Text(summary.rankingNote, color = Muted)
-        summary.families.forEach { family ->
+        state.strategySummary.families.forEach { family ->
             Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(family.name, fontWeight = FontWeight.Bold)
-                    Text(family.phase + " • " + family.status, color = Amber)
+                    Text(family.phase.replace("_", " ") + " • " + family.status, color = Muted)
                     Text(family.description, color = Muted, fontSize = 12.sp)
-                    Text("Evidence: " + family.trades + " replay/live observations", color = Muted, fontSize = 12.sp)
+                    Text(
+                        "Evidence trades: " + family.trades,
+                        color = if (family.trades > 0) Teal else Amber,
+                        fontSize = 12.sp
+                    )
                 }
             }
         }
@@ -442,184 +463,195 @@ private fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var token by remember { mutableStateOf("") }
     var secret by remember { mutableStateOf("") }
-    var staticIp by rememberSaveable { mutableStateOf("") }
-    var whitelistConfirmed by rememberSaveable { mutableStateOf(false) }
+    var staticIp by rememberSaveable { mutableStateOf(state.connectionStatus?.expectedStaticIp.orEmpty()) }
+    var whitelist by rememberSaveable { mutableStateOf(state.connectionStatus?.staticIpConfirmed == true) }
     var message by remember { mutableStateOf<String?>(null) }
+    var listenerEnabled by remember {
+        mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName))
+    }
+    var exportBusy by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.connectionStatus?.expectedStaticIp, state.connectionStatus?.staticIpConfirmed) {
-        if (staticIp.isBlank()) {
-            staticIp = state.connectionStatus?.expectedStaticIp.orEmpty()
-        }
-        whitelistConfirmed = state.connectionStatus?.staticIpConfirmed ?: whitelistConfirmed
+        state.connectionStatus?.expectedStaticIp?.let { if (staticIp.isBlank()) staticIp = it }
+        if (state.connectionStatus?.staticIpConfirmed == true) whitelist = true
     }
 
     ScreenColumn(modifier) {
         Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Secrets are encrypted on-device and never repopulated into visible fields.", color = Muted)
 
-        StatusCard(
-            title = "Order Notification Permission",
-            primary = if (NotificationHelper.notificationsAllowed(context)) "ALLOWED" else "NOT ALLOWED",
-            secondary = "IPO Sentinel only sends its own notifications. It does not request notification-listener access.",
-            primaryColor = if (NotificationHelper.notificationsAllowed(context)) Teal else Amber
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                if (Build.VERSION.SDK_INT >= 26) {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    )
-                }
-            }) { Text("Notification Settings") }
-
-            Button(onClick = {
-                NotificationHelper.showOrderEvent(
-                    context,
-                    OrderLifecycleEvent(
-                        id = System.currentTimeMillis(),
-                        timestamp = Instant.now().toString(),
-                        eventType = "STRATEGY_REVIEW",
-                        message = "IPO Sentinel test notification"
-                    )
-                )
-            }) { Text("Send Test Notification") }
-        }
-
-        Text(
-            if (state.connectionStatus?.growwConfigured == true) "Groww credentials: SAVED" else "Groww credentials: NOT SAVED",
-            color = if (state.connectionStatus?.growwConfigured == true) Teal else Amber,
-            fontWeight = FontWeight.Bold
-        )
-
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Groww TOTP token / API key") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = secret,
-            onValueChange = { secret = it },
-            label = { Text("Groww TOTP secret") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = staticIp,
-            onValueChange = { staticIp = it.trim() },
-            label = { Text("Static whitelisted public IP") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = whitelistConfirmed,
-                onCheckedChange = { whitelistConfirmed = it }
+        SettingsSection("Recovery & Notifications") {
+            CheckRow("Normal notification permission", NotificationHelper.notificationsAllowed(context))
+            CheckRow("Notification listener access", listenerEnabled)
+            Text(
+                "The listener is a wake-up hint only. If Vivo/Funtouch kills it or the process, the durable call ledger survives and the next reconnect/boot/app-open/periodic recovery resumes from Groww order + position truth.",
+                color = Muted,
+                fontSize = 12.sp
             )
-            Text("I have whitelisted this IP in Groww")
+            OutlinedButton(
+                onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Open Notification Access") }
+            TextButton(
+                onClick = {
+                    listenerEnabled = NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+                    RecoveryScheduler.ensureScheduled(context)
+                    RecoveryCoordinator.request(context, "SETTINGS_RECOVERY_CHECK", force = true)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Refresh Recovery Status") }
+            OutlinedButton(
+                onClick = {
+                    NotificationHelper.showOrderEvent(
+                        context,
+                        OrderLifecycleEvent(
+                            id = System.currentTimeMillis(),
+                            timestamp = Instant.now().toString(),
+                            eventType = "STRATEGY_REVIEW",
+                            symbol = "TEST",
+                            message = "Notification test only — no order was placed"
+                        )
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Send Test Notification") }
         }
 
-        Text(
-            "Stored token/secret are never shown. To replace credentials, enter both fields and save.",
-            color = Muted,
-            fontSize = 12.sp
-        )
+        SettingsSection("Groww TOTP") {
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Groww TOTP token / API key") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = secret,
+                onValueChange = { secret = it },
+                label = { Text("Groww TOTP secret") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                if (state.connectionStatus?.growwConfigured == true) {
+                    "Credentials are already encrypted in Android Keystore. Enter new values only to replace them."
+                } else {
+                    "Credentials are encrypted locally with Android Keystore after Save."
+                },
+                color = Muted,
+                fontSize = 12.sp
+            )
+        }
+
+        SettingsSection("Static IP") {
+            OutlinedTextField(
+                value = staticIp,
+                onValueChange = { staticIp = it.trim() },
+                label = { Text("Whitelisted static public IP") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = whitelist, onCheckedChange = { whitelist = it })
+                Text("I have whitelisted this IP in Groww")
+            }
+        }
 
         Button(
             onClick = {
-                scope.launch {
-                    val result = repository.saveGrowwSettings(token, secret, staticIp, whitelistConfirmed)
-                    if (result.ok) {
-                        token = ""
-                        secret = ""
-                        message = "Groww settings saved securely."
-                    } else {
-                        message = result.error ?: "Unable to save settings."
+                if (token.isBlank() || secret.isBlank() || staticIp.isBlank()) {
+                    message = "Enter token, TOTP secret and static IP to replace/save Groww settings."
+                } else {
+                    scope.launch {
+                        val result = repository.saveGrowwSettings(token, secret, staticIp, whitelist)
+                        if (result.ok) {
+                            token = ""
+                            secret = ""
+                            repository.validateGrowwAndStaticIp()
+                            repository.refreshBrokerTruth(force = true)
+                            message = "Groww settings saved, validated and broker recovery refreshed."
+                        } else {
+                            message = result.error ?: "Unable to save Groww settings."
+                        }
                     }
                 }
             },
-            enabled = token.isNotBlank() && secret.isNotBlank() && staticIp.isNotBlank() && !state.isRefreshing
+            enabled = !state.isRefreshing,
+            modifier = Modifier.fillMaxWidth()
         ) { Text("Save Groww Settings") }
 
-        Button(
-            onClick = {
-                scope.launch {
-                    repository.validateGrowwAndStaticIp()
-                    message = "Validation refreshed."
-                }
-            },
-            enabled = state.connectionStatus?.growwConfigured == true && !state.isRefreshing
+        OutlinedButton(
+            onClick = { scope.launch { repository.validateGrowwAndStaticIp() } },
+            enabled = !state.isRefreshing,
+            modifier = Modifier.fillMaxWidth()
         ) { Text("Validate Groww + Static IP") }
 
-        Button(
-            onClick = {
-                scope.launch {
-                    repository.refreshResearch(force = true)
-                    repository.validateGrowwAndStaticIp()
-                    message = "Shared status refreshed."
-                }
-            },
-            enabled = !state.isRefreshing
-        ) { Text("Refresh Status") }
-
-        ValidationLine("Groww TOTP authentication", state.validation?.growwAuthOk)
-        ValidationLine("Static public IP matches", state.validation?.staticIpMatches)
-        ValidationLine("Groww whitelist confirmed", state.validation?.staticIpConfirmed)
-        ValidationLine("Android Keystore ready", state.validation?.secretStoreReady ?: state.connectionStatus?.secretStoreReady)
-        ValidationLine("Official NSE calendar ready", state.researchPlan?.calendarReady)
-        ValidationLine(
-            "NSE listing identity source ready",
-            state.researchSources
-                .filter { it.name == "NSE_FORTHCOMING_LISTING" || it.name == "NSE_RECENT_LISTING" }
-                .any { it.status == "FRESH" || it.status == "CACHED" }
-        )
-
-        StatusCard(
-            title = "Automatic Live Trading",
-            primary = "OFF",
-            secondary = "Authentication success does not enable trading. Execution remains fail-closed in v1.3.2.",
-            primaryColor = Danger
-        )
-
-        Button(onClick = {
-            scope.launch {
-                runCatching {
-                    val file = AppAudit.exportWeekly(context)
-                    AppAudit.shareExport(context, file)
-                    message = "Weekly audit export created."
-                }.onFailure {
-                    message = "Audit export failed: " + (it.message ?: it.javaClass.simpleName)
-                }
+        state.validation?.let {
+            SettingsSection("Validation") {
+                CheckRow("Groww TOTP authentication", it.growwAuthOk)
+                CheckRow("Static public IP matches", it.staticIpMatches)
+                CheckRow("Whitelist confirmed", it.staticIpConfirmed)
+                CheckRow("Android Keystore", it.secretStoreReady)
+                Text("Live execution: LOCKED OFF", color = Danger, fontWeight = FontWeight.Bold)
             }
-        }) { Text("Export Weekly Audit Log") }
+        }
 
-        message?.let { Text(it, color = if (it.contains("failed", true)) Danger else Muted) }
+        SettingsSection("Weekly Verification Logs") {
+            Text(
+                "Export now includes the durable live/closed call ledger and broker-recovery status. Credentials and access tokens remain excluded.",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            Button(
+                onClick = {
+                    exportBusy = true
+                    scope.launch {
+                        runCatching {
+                            AppAudit.shareExport(context, AppAudit.exportWeekly(context))
+                        }.onFailure { message = "Export failed: " + (it.message ?: "unknown") }
+                        exportBusy = false
+                    }
+                },
+                enabled = !exportBusy,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (exportBusy) "Preparing…" else "Export Weekly Logs") }
+        }
+
+        message?.let { Text(it, color = if (it.contains("saved", true)) Teal else Amber) }
+        state.lastError?.let { Text(it, color = Danger) }
     }
 }
 
 @Composable
-private fun ValidationLine(label: String, value: Boolean?) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label)
-        Text(
-            when (value) {
-                true -> "PASS"
-                false -> "FAIL"
-                null -> "UNKNOWN"
-            },
-            color = when (value) {
-                true -> Teal
-                false -> Danger
-                null -> Muted
-            },
-            fontWeight = FontWeight.Bold
-        )
+private fun ScreenColumn(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        content = content
+    )
+}
+
+@Composable
+private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun CheckRow(label: String, passed: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(if (passed) "✓" else "✕", color = if (passed) Teal else Danger, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = Muted)
     }
 }
 
@@ -630,29 +662,11 @@ private fun StatusCard(
     secondary: String,
     primaryColor: Color
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(title, color = Muted)
-            Text(primary, color = primaryColor, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-            Text(secondary, color = Muted, fontSize = 13.sp)
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(title, color = Muted, fontSize = 12.sp)
+            Text(primary, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = primaryColor)
+            Text(secondary, color = Muted, fontSize = 12.sp)
         }
     }
-}
-
-@Composable
-private fun ScreenColumn(
-    modifier: Modifier,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        content = content
-    )
 }

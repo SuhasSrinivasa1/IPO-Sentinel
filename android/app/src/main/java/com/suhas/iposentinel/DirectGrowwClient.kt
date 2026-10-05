@@ -170,11 +170,18 @@ class DirectGrowwClient(context: Context) {
             .apply()
     }
 
-    suspend fun accessToken(): Pair<ApiResult, String?> = withContext(Dispatchers.IO) {
+    suspend fun accessToken(forceRefresh: Boolean = false): Pair<ApiResult, String?> = withContext(Dispatchers.IO) {
         try {
+            if (!forceRefresh) {
+                store.loadAccessToken(maxAgeSeconds = 30L * 60L)?.let {
+                    return@withContext ApiResult(true, 200, "{}", null) to it
+                }
+            }
             val credentials = store.loadCredentials()
                 ?: return@withContext ApiResult(false, 401, "", "Groww TOTP credentials are not saved.") to null
-            authenticate(credentials.first, generateTotp(credentials.second))
+            val result = authenticate(credentials.first, generateTotp(credentials.second))
+            result.second?.takeIf { result.first.ok && it.isNotBlank() }?.let { store.saveAccessToken(it) }
+            result
         } catch (e: Exception) {
             ApiResult(false, 500, "", safeMessage(e)) to null
         }
@@ -376,6 +383,13 @@ class DirectGrowwClient(context: Context) {
                 .putString(KEY_ACCESS_TOKEN, encrypt(token))
                 .putLong(KEY_ACCESS_TOKEN_SAVED_AT, Instant.now().epochSecond)
                 .apply()
+        }
+
+        fun loadAccessToken(maxAgeSeconds: Long): String? {
+            val savedAt = prefs.getLong(KEY_ACCESS_TOKEN_SAVED_AT, 0L)
+            if (savedAt <= 0L || Instant.now().epochSecond - savedAt > maxAgeSeconds) return null
+            val blob = prefs.getString(KEY_ACCESS_TOKEN, null) ?: return null
+            return runCatching { decrypt(blob) }.getOrNull()?.takeIf { it.isNotBlank() }
         }
 
         private fun getOrCreateKey(): SecretKey {

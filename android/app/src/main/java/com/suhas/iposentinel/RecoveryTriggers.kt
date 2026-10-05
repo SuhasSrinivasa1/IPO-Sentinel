@@ -10,9 +10,11 @@ import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 
 class BrokerNotificationListenerService : NotificationListenerService() {
@@ -26,7 +28,7 @@ class BrokerNotificationListenerService : NotificationListenerService() {
     override fun onListenerDisconnected() {
         AppAudit.log(this, "NOTIFICATION_LISTENER_DISCONNECTED")
         runCatching {
-            requestRebind(ComponentName(this, BrokerNotificationListenerService::class.java))
+            NotificationListenerService.requestRebind(ComponentName(this, BrokerNotificationListenerService::class.java))
         }
         super.onListenerDisconnected()
     }
@@ -47,7 +49,7 @@ class RecoveryBootReceiver : BroadcastReceiver() {
             else -> "SYSTEM_RECEIVER"
         }
         RecoveryScheduler.ensureScheduled(context)
-        RecoveryCoordinator.request(context, trigger, force = true)
+        RecoveryScheduler.enqueueImmediate(context, trigger)
     }
 }
 
@@ -56,16 +58,32 @@ class BrokerRecoveryWorker(
     params: WorkerParameters
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
-        val snapshot = RecoveryCoordinator.reconcile(applicationContext, "PERIODIC_WORK")
+        val trigger = inputData.getString(KEY_TRIGGER) ?: "PERIODIC_WORK"
+        val snapshot = RecoveryCoordinator.reconcile(applicationContext, trigger, force = trigger != "PERIODIC_WORK")
         return if (snapshot?.error == null || snapshot?.error == "Groww credentials are not configured") {
             Result.success()
         } else {
             Result.retry()
         }
     }
+
+    companion object {
+        const val KEY_TRIGGER = "recovery_trigger"
+    }
 }
 
 object RecoveryScheduler {
+    fun enqueueImmediate(context: Context, trigger: String) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val request = OneTimeWorkRequestBuilder<BrokerRecoveryWorker>()
+            .setInputData(workDataOf(BrokerRecoveryWorker.KEY_TRIGGER to trigger))
+            .setConstraints(constraints)
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueue(request)
+    }
+
     fun ensureScheduled(context: Context) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)

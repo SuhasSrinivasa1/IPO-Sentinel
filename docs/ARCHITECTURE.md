@@ -1,4 +1,4 @@
-# IPO Sentinel Architecture — v1.4.2
+# IPO Sentinel Architecture — v1.4.3
 
 ## Core rule
 
@@ -59,7 +59,7 @@ No future candle is used in a live signal decision.
 
 ## Strategy architecture
 
-The five v1.4.2 strategies are combinations:
+The five v1.4.3 strategies are combinations:
 - Listing Momentum Consensus;
 - VWAP Reclaim + Absorption;
 - Breakout Retest Continuation;
@@ -126,7 +126,7 @@ Stored TOTP credentials are Keystore-encrypted. `DirectGrowwClient` reuses an ac
 
 ## Data not yet promoted into strategy gates
 
-Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.2 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
+Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.3 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
 
 The architecture can add a future `PointInTimeContextProvider` beneath the replay engine once such a source is available.
 
@@ -134,5 +134,24 @@ The architecture can add a future `PointInTimeContextProvider` beneath the repla
 
 `ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false.
 
-v1.4.2 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
+v1.4.3 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
 
+
+
+## Trade-review middleware
+
+`TradeReviewGateway` is the boundary between a strategy-qualified LIVE call and a potential broker order.
+
+It constructs a CASH order intent using:
+- the exact verified NSE symbol;
+- BUY → CNC, SELL → MIS;
+- a user-selected ₹1,000–₹1,00,000 per-order budget;
+- the latest call price;
+- Groww available-margin truth;
+- Groww required-margin truth for that exact proposed order.
+
+The gateway is fail-closed for stale price, unresolved identity, insufficient balance, unsupported direction, unavailable margin data, or a non-live call.
+
+It does not invoke broker create/modify/cancel operations. The build workflow explicitly rejects `/v1/order/create`, `/v1/order/modify` and `/v1/order/cancel` in active Android files.
+
+This layer provides the required separation between research/decisioning and broker execution while preserving reproducible audit evidence.

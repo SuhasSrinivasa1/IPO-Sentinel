@@ -551,6 +551,13 @@ private fun StrategiesScreen(state: AppState, repository: AppStateRepository) {
                 HorizontalDivider(color = Divider, modifier = Modifier.padding(start = 18.dp))
             }
             item {
+                if (!replay?.missedOpportunities.isNullOrEmpty()) {
+                    SectionHeader("Missed moves", replay?.missedOpportunities?.size.toString())
+                    replay?.missedOpportunities?.take(6)?.forEach { miss ->
+                        MissedMoveRow(miss)
+                        HorizontalDivider(color = Divider, modifier = Modifier.padding(start = 18.dp))
+                    }
+                }
                 if (!replay?.errors.isNullOrEmpty()) {
                     SectionHeader("Replay diagnostics", replay?.errors?.size.toString())
                     replay?.errors?.take(8)?.forEach {
@@ -559,6 +566,29 @@ private fun StrategiesScreen(state: AppState, repository: AppStateRepository) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MissedMoveRow(miss: ReplayMiss) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(miss.symbol, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(miss.companyName, color = TextSecondary, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                miss.reason.replace("_", " ") + " • best " + miss.bestStrategyName +
+                    " scored " + String.format(Locale.ENGLISH, "%.0f", miss.bestScore),
+                color = Amber, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp)
+            )
+            Text("Replay point " + miss.at, color = TextSecondary, fontSize = 9.sp)
+        }
+        Text(
+            "+" + String.format(Locale.ENGLISH, "%.2f%%", miss.forwardReturnBps / 100.0),
+            color = Green, fontSize = 14.sp, fontWeight = FontWeight.Bold
+        )
     }
 }
 

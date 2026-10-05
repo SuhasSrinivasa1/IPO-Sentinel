@@ -1,4 +1,4 @@
-name: Build IPO Sentinel v1.3.2
+name: Build IPO Sentinel v1.3.3
 
 on:
   push:
@@ -106,11 +106,11 @@ jobs:
             app/src/main/java/com/suhas/iposentinel/MainActivity.kt
             app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
             app/src/main/java/com/suhas/iposentinel/AppAudit.kt
-            app/src/main/java/com/suhas/iposentinel/LiveNotificationService.kt
+            app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt\n            app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt\n            app/src/main/java/com/suhas/iposentinel/CallLedger.kt
           )
 
-          grep -n 'versionCode = 132' app/build.gradle.kts
-          grep -n 'versionName = "1.3.2"' app/build.gradle.kts
+          grep -n 'versionCode = 133' app/build.gradle.kts
+          grep -n 'versionName = "1.3.3"' app/build.gradle.kts
           grep -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
           grep -n 'class AppStateRepository' app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
           grep -n 'DirectResearchClient' app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
@@ -139,7 +139,7 @@ jobs:
           fi
 
           if grep -n '<service' app/src/main/AndroidManifest.xml; then
-            echo "Foreground/background polling service must remain removed in v1.3.2."
+            echo "Legacy polling services are not allowed; only broker-truth recovery listener is permitted."
             exit 1
           fi
 
@@ -157,17 +157,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
-          test -s release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
-          sha256sum release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
+          test -s release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
+          sha256sum release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk > release/SHA256SUMS.txt
           cat release/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.3.2-DIRECT
+          name: IPO-Sentinel-v1.3.3-RECOVERY
           path: |
-            android/release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
+            android/release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
             android/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

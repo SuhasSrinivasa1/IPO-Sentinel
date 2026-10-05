@@ -15,6 +15,8 @@ data class AppState(
     val researchPlan: ResearchPlan? = null,
     val researchSources: List<ResearchSourceStatus> = emptyList(),
     val usingCachedResearch: Boolean = false,
+    val calls: List<RecommendationCall> = emptyList(),
+    val brokerTruth: BrokerTruthSnapshot? = null,
     val strategySummary: StrategySummary = LocalStrategyCatalog.summary(),
     val lastValidatedAtMillis: Long? = null,
     val lastError: String? = null
@@ -24,6 +26,12 @@ data class AppState(
             it.growwAuthOk && it.staticIpMatches && it.staticIpConfirmed && it.secretStoreReady
         } == true
 
+    val liveCalls: List<RecommendationCall>
+        get() = calls.filter { it.state == "LIVE" }
+
+    val closedCalls: List<RecommendationCall>
+        get() = calls.filter { it.state == "CLOSED" }
+
     val executionReady: Boolean
         get() = false
 }
@@ -32,10 +40,16 @@ class AppStateRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val groww = DirectGrowwClient(appContext)
     private val research = DirectResearchClient(appContext)
+    private val callLedger = CallLedgerStore(appContext)
+    private val brokerStore = BrokerTruthStore(appContext)
     private val mutex = Mutex()
 
     private val _state = MutableStateFlow(
-        AppState(strategySummary = LocalStrategyCatalog.summary())
+        AppState(
+            strategySummary = LocalStrategyCatalog.summary(),
+            calls = callLedger.load(),
+            brokerTruth = brokerStore.load()
+        )
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
 
@@ -43,9 +57,12 @@ class AppStateRepository private constructor(context: Context) {
 
     suspend fun initialize() = mutex.withLock {
         if (_state.value.initialized || _state.value.isRefreshing) return@withLock
+        RecoveryScheduler.ensureScheduled(appContext)
 
         val (_, status) = groww.fetchStatus()
         val cachedPlan = research.cachedPlan()
+        cachedPlan?.let { callLedger.syncResearchPlan(it) }
+
         _state.value = _state.value.copy(
             isRefreshing = true,
             connectionStatus = status,
@@ -53,16 +70,20 @@ class AppStateRepository private constructor(context: Context) {
             researchPlan = cachedPlan,
             researchSources = research.sourceStatuses(),
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
+            calls = callLedger.load(),
+            brokerTruth = brokerStore.load(),
             lastValidatedAtMillis = groww.lastValidationAtMillis(),
             lastError = null
         )
 
         val (_, plan) = research.refreshPlan(force = false)
         if (plan != null) {
+            callLedger.syncResearchPlan(plan)
             _state.value = _state.value.copy(
                 researchPlan = plan,
                 researchSources = research.sourceStatuses(),
-                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData }
+                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
+                calls = callLedger.load()
             )
         }
 
@@ -77,6 +98,12 @@ class AppStateRepository private constructor(context: Context) {
             } else {
                 _state.value = _state.value.copy(lastError = validationResult.error)
             }
+
+            val broker = RecoveryCoordinator.reconcile(appContext, "APP_OPEN", force = true)
+            _state.value = _state.value.copy(
+                calls = callLedger.load(),
+                brokerTruth = broker ?: brokerStore.load()
+            )
         }
 
         _state.value = _state.value.copy(
@@ -89,12 +116,25 @@ class AppStateRepository private constructor(context: Context) {
     suspend fun refreshResearch(force: Boolean = true) = mutex.withLock {
         _state.value = _state.value.copy(isRefreshing = true, lastError = null)
         val (result, plan) = research.refreshPlan(force)
+        if (plan != null) callLedger.syncResearchPlan(plan)
         _state.value = _state.value.copy(
             researchPlan = plan ?: _state.value.researchPlan,
             researchSources = research.sourceStatuses(),
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
+            calls = callLedger.load(),
             isRefreshing = false,
             lastError = if (result.ok) null else result.error
+        )
+    }
+
+    suspend fun refreshBrokerTruth(force: Boolean = true) = mutex.withLock {
+        _state.value = _state.value.copy(isRefreshing = true, lastError = null)
+        val broker = RecoveryCoordinator.reconcile(appContext, "USER_REFRESH", force)
+        _state.value = _state.value.copy(
+            calls = callLedger.load(),
+            brokerTruth = broker ?: brokerStore.load(),
+            isRefreshing = false,
+            lastError = broker?.error
         )
     }
 

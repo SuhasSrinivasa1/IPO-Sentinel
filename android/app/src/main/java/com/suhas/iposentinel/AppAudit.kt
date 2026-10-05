@@ -71,6 +71,8 @@ object AppAudit {
                 .put("today_open_shadow_pnl_rupees", snapshot.todayOpenShadowPnlRupees)
                 .put("broker_realised_pnl_rupees", snapshot.brokerRealisedPnlRupees)
                 .put("shadow_account_capital_rupees", ShadowExecutionPolicy.ACCOUNT_CAPITAL_RUPEES)
+                .put("trade_review_budget_rupees", snapshot.tradeReviewSettings.budgetRupees)
+                .put("trade_review_mode", "MANUAL_BROKER_CONFIRMATION")
                 .put("last_signal_scan_at", snapshot.signalScan?.scannedAt)
                 .put("last_signal_scan_evaluated", snapshot.signalScan?.evaluatedSymbols ?: 0)
                 .put("last_signal_scan_signals", snapshot.signalScan?.signalsFound ?: 0)
@@ -85,7 +87,7 @@ object AppAudit {
                 .put("strategy_champions", strategy.champions)
                 .put("strategy_challengers", strategy.challengers)
                 .put("notification_permission", NotificationHelper.notificationsAllowed(context))
-                .put("note", "Calls are exact-identity strategy signals. Groww credentials/access tokens are excluded. Auto execution is locked off.")
+                .put("note", "Calls are exact-identity strategy signals. Groww credentials/access tokens are excluded. Order intents use live margin preflight; securities-order submission remains locked off.")
             putText(zip, "weekly-summary.json", summary.toString(2))
 
             val sources = JSONArray()

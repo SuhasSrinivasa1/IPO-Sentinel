@@ -71,6 +71,16 @@ data class StrategySignal(
     val dataFresh: Boolean
 )
 
+data class ReplayMiss(
+    val symbol: String,
+    val companyName: String,
+    val at: String,
+    val forwardReturnBps: Double,
+    val bestStrategyName: String,
+    val bestScore: Double,
+    val reason: String
+)
+
 data class ShadowReplaySummary(
     val generatedAt: String,
     val symbolsScanned: Int,
@@ -78,6 +88,7 @@ data class ShadowReplaySummary(
     val replayTrades: Int,
     val strategies: List<StrategyReplayStats>,
     val liveSignals: List<StrategySignal>,
+    val missedOpportunities: List<ReplayMiss>,
     val errors: List<String>
 )
 
@@ -368,6 +379,7 @@ class StrategyLabStore(context: Context) : SQLiteOpenHelper(
             .put("candles_stored", summary.candlesStored)
             .put("replay_trades", summary.replayTrades)
             .put("live_signals", summary.liveSignals.size)
+            .put("missed_opportunities", summary.missedOpportunities.size)
             .put("errors", JSONArray(summary.errors))
         writableDatabase.execSQL(
             "INSERT OR REPLACE INTO daily_reviews(day,generated_at,summary_json) VALUES(?,?,?)",
@@ -498,7 +510,7 @@ class StrategyLabEngine(context: Context) {
         if (plan == null) {
             return ShadowReplaySummary(
                 generatedAt, 0, store.candleCount(), store.totalReplayTrades(),
-                store.strategyStats(), emptyList(), listOf("Research plan unavailable")
+                store.strategyStats(), emptyList(), emptyList(), listOf("Research plan unavailable")
             )
         }
 
@@ -534,6 +546,10 @@ class StrategyLabEngine(context: Context) {
             latestSignal(candidate)
         }.sortedByDescending { it.score }
 
+        val misses = candidates.mapNotNull { candidate -> biggestMiss(candidate) }
+            .sortedByDescending { it.forwardReturnBps }
+            .take(10)
+
         val result = ShadowReplaySummary(
             generatedAt = generatedAt,
             symbolsScanned = scanned,
@@ -541,6 +557,7 @@ class StrategyLabEngine(context: Context) {
             replayTrades = store.totalReplayTrades(),
             strategies = store.strategyStats(),
             liveSignals = liveSignals,
+            missedOpportunities = misses,
             errors = errors.distinct().take(20)
         )
         store.saveDailyReview(result)
@@ -555,6 +572,7 @@ class StrategyLabEngine(context: Context) {
             replayTrades = store.totalReplayTrades(),
             strategies = store.strategyStats(),
             liveSignals = emptyList(),
+            missedOpportunities = emptyList(),
             errors = emptyList()
         )
     }
@@ -584,6 +602,42 @@ class StrategyLabEngine(context: Context) {
                 )
             }
         }
+    }
+
+    private fun biggestMiss(candidate: ResearchCandidate): ReplayMiss? {
+        val growwSymbol = candidate.growwSymbol ?: return null
+        val candles = store.candles(growwSymbol)
+        if (candles.size < MIN_BARS + EXIT_HORIZON_BARS + 1) return null
+
+        var bestMiss: ReplayMiss? = null
+        for (index in MIN_BARS until candles.lastIndex - EXIT_HORIZON_BARS) {
+            val evaluations = evaluateAt(candles, index)
+            val best = evaluations.maxByOrNull { it.second } ?: continue
+            if (best.second >= REPLAY_SIGNAL_THRESHOLD) continue
+
+            val start = candles[index].close
+            val future = candles[index + EXIT_HORIZON_BARS].close
+            if (start <= 0.0) continue
+            val moveBps = ((future / start) - 1.0) * 10_000.0
+            if (moveBps < MISSED_MOVE_THRESHOLD_BPS) continue
+
+            val miss = ReplayMiss(
+                symbol = candidate.symbol ?: growwSymbol.removePrefix("NSE-"),
+                companyName = candidate.companyName,
+                at = candles[index].timestamp,
+                forwardReturnBps = moveBps,
+                bestStrategyName = best.first.name,
+                bestScore = best.second,
+                reason = when {
+                    best.second >= 60.0 -> "NEAR_THRESHOLD"
+                    metrics(candles, index).relativeVolume < 1.1 -> "LOW_VOLUME_CONFIRMATION"
+                    !metrics(candles, index).closeAboveVwap -> "BELOW_VWAP"
+                    else -> "SETUP_NOT_RECOGNIZED"
+                }
+            )
+            if (bestMiss == null || miss.forwardReturnBps > bestMiss!!.forwardReturnBps) bestMiss = miss
+        }
+        return bestMiss
     }
 
     private fun latestSignal(candidate: ResearchCandidate): StrategySignal? {
@@ -756,6 +810,7 @@ class StrategyLabEngine(context: Context) {
         private const val EXIT_HORIZON_BARS = 6
         private const val REPLAY_SIGNAL_THRESHOLD = 70.0
         private const val LIVE_SIGNAL_THRESHOLD = 75.0
+        private const val MISSED_MOVE_THRESHOLD_BPS = 200.0
         private const val LIVE_FRESHNESS_SECONDS = 15L * 60L
 
         private fun typical(candle: MarketCandle): Double =

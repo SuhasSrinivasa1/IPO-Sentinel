@@ -1,13 +1,13 @@
 # IPO Sentinel
 
-IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.1 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
+IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.2 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
 
 ## Current release target
 
 - Version: **1.4.1**
-- Version code: **141**
+- Version code: **142**
 - Android application ID: `com.suhas.iposentinel.installfix`
-- Artifact: `IPO-Sentinel-v1.4.1-PRO-debug.apk`
+- Artifact: `IPO-Sentinel-v1.4.2-PRO-debug.apk`
 - Compile / target SDK: 35
 - Java: 17
 - Automatic real-money execution: **LOCKED OFF**
@@ -45,6 +45,7 @@ Legacy `research:` call rows from v1.3.3 are removed during migration. Research 
 
 Each call persists:
 - official NSE symbol, ISIN and exact Groww symbol;
+- shadow quantity, deployed notional, rupee P&L and selected holding policy;
 - signal timestamp and update timestamp;
 - primary strategy plus confirming strategies;
 - signal score and evidence;
@@ -70,6 +71,25 @@ Runtime classifications are evidence-gated:
 - **CHAMPION**: at least 20 replay trades, expectancy >= 35 bps, profit factor >= 1.25, max drawdown <= 900 bps.
 - **CHALLENGER**: at least 10 replay trades, positive expectancy and profit factor >= 1.05.
 - otherwise **LEARNING**.
+
+## Shadow account, P&L and holding decisions
+
+The Calls tab shows **Shadow P&L** and **Closed P&L** immediately above Live / Closed. The model account starts at **₹1,00,000**. New shadow positions are sized fail-closed using both a **₹25,000 maximum position** and **₹1,000 maximum modeled risk per trade**, subject to remaining shadow capital.
+
+The application chooses the hold horizon from the strategy rather than forcing every call to close intraday:
+- Listing Momentum Consensus: intraday;
+- VWAP Reclaim + Absorption: up to 2 trading sessions;
+- Breakout Retest Continuation: up to 5 trading sessions;
+- Compression → Expansion: up to 10 trading sessions;
+- Relative Strength Continuation: up to 20 trading sessions.
+
+Stop loss and Target 2 remain hard shadow exits. If neither is reached, the strategy-specific maximum hold closes the position at the last available session close. Multi-session calls are reconciled from Groww candle history after process death.
+
+Groww broker positions remain read-only. The app also reads Groww's `realised_pnl` field when available so actual broker realized P&L is displayed separately from the hypothetical shadow result.
+
+## Groww authentication lifecycle
+
+TOTP credentials are encrypted in Android Keystore. The Android client caches a generated Groww access token for at most 30 minutes, then regenerates it using the saved TOTP token/secret; HTTP 401/403 responses trigger an immediate forced refresh. Manual Groww access tokens have a broker-defined daily expiry, but the app does not require the user to re-enter the rotating six-digit TOTP code.
 
 ## Shadow replay and daily learning
 
@@ -130,7 +150,7 @@ Once an IPO identity has been exactly resolved, intraday signal generation is dr
 
 ## Fundamentals and news boundary
 
-v1.4.1 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
+v1.4.2 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
 
 Those features require a reliable timestamped source with point-in-time availability. Adding present-day news/fundamentals retrospectively to old candles would contaminate shadow replay with hindsight, so the app fails closed rather than manufacturing that context.
 
@@ -148,7 +168,7 @@ Recovery paths include:
 - market-signal WorkManager;
 - manual refresh.
 
-The signal scanner also catches up outstanding calls by fetching their original signal-date candle history after a process gap. Broker notifications are wake hints only; read-only Groww orders/positions remain broker truth.
+The signal scanner catches up outstanding calls by fetching the full candle range from the original signal date through the current date after a process gap. Broker notifications are wake hints only; read-only Groww orders/positions remain broker truth.
 
 ## Audit
 

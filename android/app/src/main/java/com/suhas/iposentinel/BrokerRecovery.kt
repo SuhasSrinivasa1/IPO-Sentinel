@@ -82,15 +82,25 @@ class BrokerTruthClient(context: Context) {
     }
 
     private fun readSnapshot(now: String, trigger: String, token: String): BrokerTruthSnapshot {
-        val orders = getJson(
-            "/v1/order/list?segment=CASH&page=0&page_size=100",
-            token
-        ).let(::parseOrders)
+        val orders = fetchAllCashOrders(token)
         val positions = getJson(
             "/v1/positions/user?segment=CASH",
             token
         ).let(::parsePositions)
         return BrokerTruthSnapshot(now, orders, positions, trigger, null)
+    }
+
+    private fun fetchAllCashOrders(token: String): List<BrokerOrderTruth> {
+        val all = mutableListOf<BrokerOrderTruth>()
+        for (page in 0 until MAX_ORDER_PAGES) {
+            val batch = getJson(
+                "/v1/order/list?segment=CASH&page=" + page + "&page_size=" + ORDER_PAGE_SIZE,
+                token
+            ).let(::parseOrders)
+            all += batch
+            if (batch.size < ORDER_PAGE_SIZE) break
+        }
+        return all.distinctBy { it.growwOrderId }
     }
 
     private fun getJson(path: String, token: String): JSONObject {
@@ -174,6 +184,8 @@ class BrokerTruthClient(context: Context) {
 
     companion object {
         private const val GROWW_BASE = "https://api.groww.in"
+        private const val ORDER_PAGE_SIZE = 25
+        private const val MAX_ORDER_PAGES = 20
     }
 }
 

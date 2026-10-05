@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.withLock
 data class AppState(
     val initialized: Boolean = false,
     val isRefreshing: Boolean = false,
+    val isReplaying: Boolean = false,
     val connectionStatus: ConnectionStatus? = null,
     val validation: ValidationStatus? = null,
     val researchPlan: ResearchPlan? = null,
@@ -17,6 +18,8 @@ data class AppState(
     val usingCachedResearch: Boolean = false,
     val calls: List<RecommendationCall> = emptyList(),
     val brokerTruth: BrokerTruthSnapshot? = null,
+    val signalScan: SignalScanSummary? = null,
+    val replaySummary: ReplayRunSummary? = null,
     val strategySummary: StrategySummary = LocalStrategyCatalog.summary(),
     val lastValidatedAtMillis: Long? = null,
     val lastError: String? = null
@@ -27,10 +30,10 @@ data class AppState(
         } == true
 
     val liveCalls: List<RecommendationCall>
-        get() = calls.filter { it.state == "LIVE" }
+        get() = calls.filter { it.state == "LIVE" }.sortedByDescending { it.recommendedAt }
 
     val closedCalls: List<RecommendationCall>
-        get() = calls.filter { it.state == "CLOSED" }
+        get() = calls.filter { it.state == "CLOSED" }.sortedByDescending { it.closedAt ?: it.lastUpdatedAt }
 
     val executionReady: Boolean
         get() = false
@@ -42,11 +45,15 @@ class AppStateRepository private constructor(context: Context) {
     private val research = DirectResearchClient(appContext)
     private val callLedger = CallLedgerStore(appContext)
     private val brokerStore = BrokerTruthStore(appContext)
+    private val strategyStore = StrategyEvidenceStore(appContext)
+    private val signalScanner = LiveSignalScanner(appContext)
+    private val replayEngine = ShadowReplayEngine(appContext)
     private val mutex = Mutex()
 
     private val _state = MutableStateFlow(
         AppState(
-            strategySummary = LocalStrategyCatalog.summary(),
+            strategySummary = strategyStore.summary(),
+            replaySummary = strategyStore.lastReplay(),
             calls = callLedger.load(),
             brokerTruth = brokerStore.load()
         )
@@ -58,10 +65,11 @@ class AppStateRepository private constructor(context: Context) {
     suspend fun initialize() = mutex.withLock {
         if (_state.value.initialized || _state.value.isRefreshing) return@withLock
         RecoveryScheduler.ensureScheduled(appContext)
+        ResearchLearningScheduler.ensureScheduled(appContext)
+        callLedger.migrateLegacyResearchRows()
 
         val (_, status) = groww.fetchStatus()
         val cachedPlan = research.cachedPlan()
-        cachedPlan?.let { callLedger.syncResearchPlan(it) }
 
         _state.value = _state.value.copy(
             isRefreshing = true,
@@ -72,18 +80,18 @@ class AppStateRepository private constructor(context: Context) {
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
             calls = callLedger.load(),
             brokerTruth = brokerStore.load(),
+            replaySummary = strategyStore.lastReplay(),
+            strategySummary = strategyStore.summary(),
             lastValidatedAtMillis = groww.lastValidationAtMillis(),
             lastError = null
         )
 
         val (_, plan) = research.refreshPlan(force = false)
         if (plan != null) {
-            callLedger.syncResearchPlan(plan)
             _state.value = _state.value.copy(
                 researchPlan = plan,
                 researchSources = research.sourceStatuses(),
-                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
-                calls = callLedger.load()
+                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData }
             )
         }
 
@@ -104,26 +112,74 @@ class AppStateRepository private constructor(context: Context) {
                 calls = callLedger.load(),
                 brokerTruth = broker ?: brokerStore.load()
             )
+
+            val activePlan = plan ?: cachedPlan
+            if (activePlan != null) {
+                val scan = signalScanner.scan(activePlan)
+                _state.value = _state.value.copy(
+                    signalScan = scan,
+                    calls = callLedger.load(),
+                    lastError = scan.errors.firstOrNull() ?: _state.value.lastError
+                )
+            }
         }
 
         _state.value = _state.value.copy(
             initialized = true,
             isRefreshing = false,
-            lastError = _state.value.lastError
+            calls = callLedger.load(),
+            strategySummary = strategyStore.summary(),
+            replaySummary = strategyStore.lastReplay()
         )
     }
 
     suspend fun refreshResearch(force: Boolean = true) = mutex.withLock {
         _state.value = _state.value.copy(isRefreshing = true, lastError = null)
         val (result, plan) = research.refreshPlan(force)
-        if (plan != null) callLedger.syncResearchPlan(plan)
         _state.value = _state.value.copy(
             researchPlan = plan ?: _state.value.researchPlan,
             researchSources = research.sourceStatuses(),
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
-            calls = callLedger.load(),
             isRefreshing = false,
             lastError = if (result.ok) null else result.error
+        )
+    }
+
+    suspend fun refreshSignals() = mutex.withLock {
+        val plan = _state.value.researchPlan
+        if (plan == null) {
+            _state.value = _state.value.copy(lastError = "Research plan is not ready.")
+            return@withLock
+        }
+        _state.value = _state.value.copy(isRefreshing = true, lastError = null)
+        val scan = signalScanner.scan(plan)
+        _state.value = _state.value.copy(
+            signalScan = scan,
+            calls = callLedger.load(),
+            isRefreshing = false,
+            lastError = scan.errors.firstOrNull()
+        )
+    }
+
+    suspend fun refreshAll() {
+        refreshResearch(force = true)
+        refreshSignals()
+        refreshBrokerTruth(force = false)
+    }
+
+    suspend fun runShadowReplay() = mutex.withLock {
+        val plan = _state.value.researchPlan
+        if (plan == null) {
+            _state.value = _state.value.copy(lastError = "Research plan is not ready for replay.")
+            return@withLock
+        }
+        _state.value = _state.value.copy(isReplaying = true, lastError = null)
+        val summary = replayEngine.runFull(plan)
+        _state.value = _state.value.copy(
+            replaySummary = summary,
+            strategySummary = strategyStore.summary(),
+            isReplaying = false,
+            lastError = summary.errors.firstOrNull()
         )
     }
 

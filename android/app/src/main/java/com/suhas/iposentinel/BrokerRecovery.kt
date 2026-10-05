@@ -57,18 +57,40 @@ class BrokerTruthClient(context: Context) {
         }
 
         return try {
-            val orders = getJson(
-                "/v1/order/list?segment=CASH&page=0&page_size=100",
-                token
-            ).let(::parseOrders)
-            val positions = getJson(
-                "/v1/positions/user?segment=CASH",
-                token
-            ).let(::parsePositions)
-            BrokerTruthSnapshot(now, orders, positions, trigger, null)
+            readSnapshot(now, trigger, token)
+        } catch (e: BrokerHttpException) {
+            if (e.code == 401 || e.code == 403) {
+                val (freshResult, freshToken) = groww.accessToken(forceRefresh = true)
+                if (freshResult.ok && !freshToken.isNullOrBlank()) {
+                    runCatching { readSnapshot(now, trigger, freshToken) }
+                        .getOrElse { retryError ->
+                            BrokerTruthSnapshot(
+                                now,
+                                trigger = trigger,
+                                error = retryError.message?.take(240) ?: retryError.javaClass.simpleName
+                            )
+                        }
+                } else {
+                    BrokerTruthSnapshot(now, trigger = trigger, error = freshResult.error ?: "Groww re-authentication failed")
+                }
+            } else {
+                BrokerTruthSnapshot(now, trigger = trigger, error = e.message?.take(240))
+            }
         } catch (e: Exception) {
             BrokerTruthSnapshot(now, trigger = trigger, error = e.message?.take(240) ?: e.javaClass.simpleName)
         }
+    }
+
+    private fun readSnapshot(now: String, trigger: String, token: String): BrokerTruthSnapshot {
+        val orders = getJson(
+            "/v1/order/list?segment=CASH&page=0&page_size=100",
+            token
+        ).let(::parseOrders)
+        val positions = getJson(
+            "/v1/positions/user?segment=CASH",
+            token
+        ).let(::parsePositions)
+        return BrokerTruthSnapshot(now, orders, positions, trigger, null)
     }
 
     private fun getJson(path: String, token: String): JSONObject {
@@ -85,7 +107,7 @@ class BrokerTruthClient(context: Context) {
         val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
         connection.disconnect()
         if (code !in 200..299) {
-            throw IllegalStateException("Groww broker truth returned HTTP $code")
+            throw BrokerHttpException(code)
         }
         return JSONObject(body)
     }
@@ -146,6 +168,9 @@ class BrokerTruthClient(context: Context) {
 
     private fun JSONObject.optNullableDouble(name: String): Double? =
         if (has(name) && !isNull(name)) optDouble(name) else null
+
+    private class BrokerHttpException(val code: Int) :
+        IllegalStateException("Groww broker truth returned HTTP " + code)
 
     companion object {
         private const val GROWW_BASE = "https://api.groww.in"

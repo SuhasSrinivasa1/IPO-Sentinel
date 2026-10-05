@@ -1,4 +1,4 @@
-# IPO Sentinel Architecture — v1.4.0
+# IPO Sentinel Architecture — v1.4.1
 
 ## Core rule
 
@@ -30,10 +30,10 @@ broker truth / candle reconciliation
 
 ## Calls-first UX
 
-The first/default bottom tab is **Calls**. A top TabRow switches between **LIVE** and **CLOSED**.
+The first/default bottom tab is **Calls**. A compact top segmented control switches between **LIVE** and **CLOSED**.
 
 The call list is intentionally information-dense:
-- official NSE symbol;
+- official NSE symbol plus the exact Groww symbol visible on the collapsed row;
 - verified identity status;
 - signal/close time in IST;
 - strategy;
@@ -41,7 +41,7 @@ The call list is intentionally information-dense:
 - current or realized return;
 - expandable strategy evidence and broker reconciliation.
 
-Research candidates live exclusively in the Research tab.
+Research candidates live exclusively in the Research tab, including a dedicated **Identity pending** section for unresolved mappings.
 
 ## Signal evidence
 
@@ -57,7 +57,7 @@ No future candle is used in a live signal decision.
 
 ## Strategy architecture
 
-The five v1.4.0 strategies are combinations:
+The five v1.4.1 strategies are combinations:
 - Listing Momentum Consensus;
 - VWAP Reclaim + Absorption;
 - Breakout Retest Continuation;
@@ -91,9 +91,10 @@ This supports:
 
 ## Daily learning schedule
 
-Two WorkManager loops complement the foreground app:
+Three WorkManager loops complement the foreground app:
 - network-constrained market scan every 15 minutes;
-- daily off-market research/shadow replay targeting an initial 18:45 IST run, repeating every 24 hours.
+- daily pre-market research refresh targeting 08:35 IST;
+- daily off-market research/shadow replay targeting 18:45 IST.
 
 The foreground app scans every five minutes while open. Worker timing remains best-effort because Android/OEM schedulers may defer background work.
 
@@ -113,7 +114,7 @@ This distinction is critical when NSE challenges the device with 403/HTML respon
 
 ## Data not yet promoted into strategy gates
 
-Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.0 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
+Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.1 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
 
 The architecture can add a future `PointInTimeContextProvider` beneath the replay engine once such a source is available.
 
@@ -121,5 +122,5 @@ The architecture can add a future `PointInTimeContextProvider` beneath the repla
 
 `ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false.
 
-v1.4.0 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
+v1.4.1 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
 

@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -231,8 +230,8 @@ private fun CallsScreen(
             status = when {
                 state.isRefreshing -> "Scanning market…"
                 state.signalScan == null -> "Waiting for first verified scan"
-                state.signalScan.errors.isNotEmpty() -> "Scan degraded"
-                else -> "Last scan " + formatIst(state.signalScan.scannedAt)
+                state.signalScan?.errors?.isNotEmpty() == true -> "Scan degraded"
+                else -> "Last scan " + formatIst(state.signalScan?.scannedAt)
             }
         )
 

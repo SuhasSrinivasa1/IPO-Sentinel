@@ -3,6 +3,7 @@ package com.suhas.iposentinel
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -292,7 +293,11 @@ private fun CallsScreen(
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(calls, key = { it.callId }) { call ->
-                    CallRow(call, onReview)
+                    CallRow(
+                        call = call,
+                        liveReviewMode = state.tradeReviewSettings.liveReviewMode,
+                        onReview = onReview
+                    )
                     HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
                 }
                 item { Spacer(Modifier.height(18.dp)) }
@@ -462,9 +467,11 @@ private fun EmptyCallsState(mode: CallsMode, state: AppState) {
 @Composable
 private fun CallRow(
     call: RecommendationCall,
+    liveReviewMode: Boolean,
     onReview: suspend (RecommendationCall) -> OrderReviewResult
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
     var reviewBusy by remember(call.callId) { mutableStateOf(false) }
     var orderReview by remember(call.callId) { mutableStateOf<OrderReviewResult?>(null) }
@@ -522,8 +529,12 @@ private fun CallRow(
                         modifier = Modifier.clickable(enabled = !reviewBusy) {
                             scope.launch {
                                 reviewBusy = true
-                                orderReview = onReview(call)
+                                val review = onReview(call)
+                                orderReview = review
                                 reviewBusy = false
+                                if (liveReviewMode && review.ready) {
+                                    openGrowwApp(context)
+                                }
                             }
                         }
                     ) {
@@ -538,7 +549,11 @@ private fun CallRow(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                if (reviewBusy) "CHECKING" else "REVIEW ORDER",
+                                when {
+                                    reviewBusy -> "CHECKING"
+                                    liveReviewMode -> "OPEN GROWW"
+                                    else -> "REVIEW ORDER"
+                                },
                                 color = TextSecondary,
                                 fontSize = 8.sp,
                                 fontWeight = FontWeight.Bold
@@ -723,12 +738,20 @@ private fun OrderReviewDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    clipboard.setText(AnnotatedString(review.brokerReadyText()))
+            Row {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(review.brokerReadyText()))
+                    }
+                ) {
+                    Text("Copy")
                 }
-            ) {
-                Text("Copy order")
+                if (review.ready) {
+                    val context = LocalContext.current
+                    TextButton(onClick = { openGrowwApp(context) }) {
+                        Text("Open Groww")
+                    }
+                }
             }
         },
         dismissButton = {
@@ -1198,7 +1221,29 @@ private fun SystemScreen(
         }
 
         FlatSection("Trade review") {
-            SystemLine("Execution mode", "MANUAL BROKER CONFIRMATION", Info)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Live Review Mode", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (state.tradeReviewSettings.liveReviewMode) {
+                            "Confidence tap preflights and opens Groww for final confirmation"
+                        } else {
+                            "Confidence tap stays inside IPO Sentinel review"
+                        },
+                        color = TextSecondary,
+                        fontSize = 9.sp
+                    )
+                }
+                Switch(
+                    checked = state.tradeReviewSettings.liveReviewMode,
+                    onCheckedChange = { repository.saveLiveReviewMode(it) }
+                )
+            }
+            SystemLine(
+                "Execution mode",
+                if (state.tradeReviewSettings.liveReviewMode) "GROWW HANDOFF" else "MANUAL BROKER CONFIRMATION",
+                Info
+            )
             SystemLine(
                 "Per-order budget",
                 "₹" + String.format("%,.0f", budgetDraft),
@@ -1488,6 +1533,20 @@ private fun pnlColor(value: Double): Color = when {
     value > 0.0 -> Positive
     value < 0.0 -> Negative
     else -> TextPrimary
+}
+
+private fun openGrowwApp(context: android.content.Context) {
+    val launch = context.packageManager.getLaunchIntentForPackage("com.nextbillion.groww")
+    if (launch != null) {
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(launch)
+    } else {
+        val playStore = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://play.google.com/store/apps/details?id=com.nextbillion.groww")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(playStore)
+    }
 }
 
 private fun signedPct(value: Double): String =

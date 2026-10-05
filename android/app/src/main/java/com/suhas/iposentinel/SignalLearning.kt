@@ -49,9 +49,13 @@ class LiveSignalScanner(context: Context) {
             )
         }
 
-        val benchmark = market.fetchSessionCandles(
+        val benchmarkRaw = market.fetchSessionCandles(
             DirectMarketDataClient.BENCHMARK_GROWW_SYMBOL,
             now.toLocalDate()
+        )
+        val cutoff = Instant.now().minusSeconds(5L * 60L)
+        val benchmark = benchmarkRaw.copy(
+            candles = benchmarkRaw.candles.filter { !it.timestamp.isAfter(cutoff) }
         )
         val errors = mutableListOf<String>()
         benchmark.error?.let { errors += "NIFTY:" + it }
@@ -66,11 +70,12 @@ class LiveSignalScanner(context: Context) {
                 errors += (candidate.symbol ?: growwSymbol) + ":" + series.error
                 continue
             }
-            if (series.candles.size < 7) continue
+            val closedCandles = series.candles.filter { !it.timestamp.isAfter(cutoff) }
+            if (closedCandles.size < 7) continue
             evaluated += 1
 
             val beforeIds = ledger.load().filter { it.state == "LIVE" }.map { it.callId }.toSet()
-            val decision = engine.evaluateBest(candidate, series.candles, benchmark.candles)
+            val decision = engine.evaluateBest(candidate, closedCandles, benchmark.candles)
             if (decision != null) {
                 signals += 1
                 val call = ledger.upsertSignal(candidate, decision)
@@ -93,7 +98,7 @@ class LiveSignalScanner(context: Context) {
             }
             ledger.reconcileMarketCandles(
                 nseSymbol = candidate.symbol ?: growwSymbol.substringAfter("NSE-"),
-                candles = series.candles
+                candles = closedCandles
             )
         }
 

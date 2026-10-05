@@ -3,6 +3,7 @@ package com.suhas.iposentinel
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Duration
 import java.time.Instant
 
 data class RecommendationCall(
@@ -16,6 +17,14 @@ data class RecommendationCall(
     val recommendedAt: String,
     val lastUpdatedAt: String,
     val sourceGeneratedAt: String?,
+    val strategyId: String? = null,
+    val strategyName: String? = null,
+    val setupScore: Double? = null,
+    val signalAt: String? = null,
+    val referencePrice: Double? = null,
+    val vwap: Double? = null,
+    val relativeVolume: Double? = null,
+    val reasonCodes: List<String> = emptyList(),
     val closedAt: String? = null,
     val closeReason: String? = null,
     val brokerOrderId: String? = null,
@@ -34,6 +43,7 @@ class CallLedgerStore(context: Context) {
         return buildList {
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
+                val reasons = obj.optJSONArray("reason_codes") ?: JSONArray()
                 add(
                     RecommendationCall(
                         callId = obj.optString("call_id"),
@@ -46,6 +56,18 @@ class CallLedgerStore(context: Context) {
                         recommendedAt = obj.optString("recommended_at"),
                         lastUpdatedAt = obj.optString("last_updated_at"),
                         sourceGeneratedAt = obj.optString("source_generated_at").ifBlank { null },
+                        strategyId = obj.optString("strategy_id").ifBlank { null },
+                        strategyName = obj.optString("strategy_name").ifBlank { null },
+                        setupScore = if (obj.isNull("setup_score")) null else obj.optDouble("setup_score"),
+                        signalAt = obj.optString("signal_at").ifBlank { null },
+                        referencePrice = if (obj.isNull("reference_price")) null else obj.optDouble("reference_price"),
+                        vwap = if (obj.isNull("vwap")) null else obj.optDouble("vwap"),
+                        relativeVolume = if (obj.isNull("relative_volume")) null else obj.optDouble("relative_volume"),
+                        reasonCodes = buildList {
+                            for (j in 0 until reasons.length()) {
+                                reasons.optString(j).takeIf { it.isNotBlank() }?.let(::add)
+                            }
+                        },
                         closedAt = obj.optString("closed_at").ifBlank { null },
                         closeReason = obj.optString("close_reason").ifBlank { null },
                         brokerOrderId = obj.optString("broker_order_id").ifBlank { null },
@@ -56,66 +78,97 @@ class CallLedgerStore(context: Context) {
                     )
                 )
             }
-        }.sortedByDescending { it.lastUpdatedAt }
+        }.sortedWith(
+            compareByDescending<RecommendationCall> { it.state == "LIVE" }
+                .thenByDescending { it.lastUpdatedAt }
+        )
     }
 
-    fun syncResearchPlan(plan: ResearchPlan): List<RecommendationCall> {
-        val now = Instant.now().toString()
+    /**
+     * v1.4 call semantics:
+     * a research candidate is NOT a call. A call exists only after the exact NSE/Groww
+     * identity receives a strategy-qualified market-data signal.
+     */
+    fun syncStrategySignals(
+        plan: ResearchPlan?,
+        replay: ShadowReplaySummary
+    ): List<RecommendationCall> {
+        val now = Instant.now()
+        val nowText = now.toString()
         val existing = load().associateBy { it.callId }.toMutableMap()
-        val eligible = (plan.nextTradingDayCandidates + plan.allKnownCandidates.filter {
-            (it.tradingDayNumber ?: 0) in 1..30
-        })
-            .distinctBy { it.candidateId }
-            .filter { it.symbolResolved && it.lifecycleState == "READY_FOR_RESEARCH" }
-            .sortedWith(
-                compareBy<ResearchCandidate> { it.tradingDayNumber ?: -1 }
-                    .thenBy { it.listingDate ?: "" }
-                    .thenBy { it.symbol ?: it.companyName }
-            )
-
+        val candidateMap = plan?.allKnownCandidates.orEmpty().associateBy { it.candidateId }
         val activeIds = mutableSetOf<String>()
-        eligible.forEach { candidate ->
-            val callId = "research:" + candidate.candidateId
-            activeIds += callId
-            val old = existing[callId]
-            existing[callId] = RecommendationCall(
-                callId = callId,
-                candidateId = candidate.candidateId,
-                symbol = candidate.growwSymbol ?: candidate.symbol,
-                companyName = candidate.companyName,
-                board = if (candidate.isSme) "SME" else "MAINBOARD",
-                state = "LIVE",
-                action = candidate.resolutionStatus
-                    .replace("_", " ")
-                    .ifBlank { "WAIT LIVE CONFIRMATION" },
-                recommendedAt = old?.recommendedAt ?: now,
-                lastUpdatedAt = now,
-                sourceGeneratedAt = plan.generatedAt,
-                closedAt = null,
-                closeReason = null,
-                brokerOrderId = old?.brokerOrderId,
-                brokerOrderStatus = old?.brokerOrderStatus,
-                brokerPositionQuantity = old?.brokerPositionQuantity,
-                brokerAveragePrice = old?.brokerAveragePrice,
-                lastBrokerReconciledAt = old?.lastBrokerReconciledAt
-            )
-        }
 
-        // Only retire missing calls from a fully healthy fresh research cycle.
-        // A degraded/cached NSE cycle must not manufacture a "closed" recommendation.
-        if (plan.researchHealth == "OK" && plan.sourceReady) {
-            existing.values.filter { it.state == "LIVE" && it.callId !in activeIds }.forEach { old ->
-                existing[old.callId] = old.copy(
-                    state = "CLOSED",
-                    lastUpdatedAt = now,
-                    closedAt = now,
-                    closeReason = "LEFT_ACTIVE_RESEARCH_UNIVERSE"
+        replay.liveSignals
+            .filter { it.dataFresh }
+            .forEach { signal ->
+                val candidate = candidateMap[signal.candidateId] ?: return@forEach
+                if (!candidate.symbolResolved || candidate.growwSymbol.isNullOrBlank()) return@forEach
+
+                val callId = "signal:" + signal.candidateId + ":" + signal.strategyId
+                activeIds += callId
+                val old = existing[callId]
+                existing[callId] = RecommendationCall(
+                    callId = callId,
+                    candidateId = signal.candidateId,
+                    symbol = signal.symbol.uppercase(),
+                    companyName = signal.companyName,
+                    board = signal.board,
+                    state = "LIVE",
+                    action = "WATCH LONG",
+                    recommendedAt = old?.recommendedAt ?: nowText,
+                    lastUpdatedAt = nowText,
+                    sourceGeneratedAt = plan?.generatedAt,
+                    strategyId = signal.strategyId,
+                    strategyName = signal.strategyName,
+                    setupScore = signal.score,
+                    signalAt = signal.signalAt,
+                    referencePrice = signal.referencePrice,
+                    vwap = signal.vwap,
+                    relativeVolume = signal.relativeVolume,
+                    reasonCodes = signal.reasonCodes,
+                    closedAt = null,
+                    closeReason = null,
+                    brokerOrderId = old?.brokerOrderId,
+                    brokerOrderStatus = old?.brokerOrderStatus,
+                    brokerPositionQuantity = old?.brokerPositionQuantity,
+                    brokerAveragePrice = old?.brokerAveragePrice,
+                    lastBrokerReconciledAt = old?.lastBrokerReconciledAt
                 )
             }
-        }
+
+        existing.values
+            .filter { it.state == "LIVE" && it.callId.startsWith("research:") }
+            .forEach { old ->
+                existing[old.callId] = old.copy(
+                    state = "CLOSED",
+                    lastUpdatedAt = nowText,
+                    closedAt = nowText,
+                    closeReason = "MIGRATED_TO_STRATEGY_QUALIFIED_CALLS"
+                )
+            }
+
+        existing.values
+            .filter { it.state == "LIVE" && it.callId.startsWith("signal:") && it.callId !in activeIds }
+            .forEach { old ->
+                val positionOpen = (old.brokerPositionQuantity ?: 0) != 0
+                val last = runCatching { Instant.parse(old.lastUpdatedAt) }.getOrNull()
+                val expired = last == null || Duration.between(last, now).toMinutes() >= SIGNAL_EXPIRY_MINUTES
+                if (!positionOpen && expired) {
+                    existing[old.callId] = old.copy(
+                        state = "CLOSED",
+                        lastUpdatedAt = nowText,
+                        closedAt = nowText,
+                        closeReason = "SETUP_NO_LONGER_ACTIVE"
+                    )
+                }
+            }
 
         val merged = existing.values
-            .sortedWith(compareByDescending<RecommendationCall> { it.state == "LIVE" }.thenByDescending { it.lastUpdatedAt })
+            .sortedWith(
+                compareByDescending<RecommendationCall> { it.state == "LIVE" }
+                    .thenByDescending { it.recommendedAt }
+            )
             .take(MAX_CALL_HISTORY)
         save(merged)
         return merged
@@ -124,10 +177,14 @@ class CallLedgerStore(context: Context) {
     fun reconcileBroker(snapshot: BrokerTruthSnapshot): List<RecommendationCall> {
         val now = snapshot.fetchedAt
         val calls = load().map { call ->
-            val symbol = call.symbol?.uppercase() ?: return@map call
-            val matchingOrders = snapshot.orders.filter { it.tradingSymbol.uppercase() == symbol }
+            val symbol = call.symbol?.uppercase()?.removePrefix("NSE-") ?: return@map call
+            val matchingOrders = snapshot.orders.filter {
+                it.tradingSymbol.uppercase().removePrefix("NSE-") == symbol
+            }
             val latest = matchingOrders.maxByOrNull { it.createdAt ?: "" }
-            val position = snapshot.positions.firstOrNull { it.tradingSymbol.uppercase() == symbol }
+            val position = snapshot.positions.firstOrNull {
+                it.tradingSymbol.uppercase().removePrefix("NSE-") == symbol
+            }
             val priorQty = call.brokerPositionQuantity ?: 0
             val newQty = position?.netQuantity ?: 0
 
@@ -140,8 +197,6 @@ class CallLedgerStore(context: Context) {
                 lastUpdatedAt = now
             )
 
-            // If this app previously observed an open broker position for the call
-            // and broker truth later reports it flat, the call is durably closed.
             if (call.state == "LIVE" && priorQty != 0 && newQty == 0) {
                 updated = updated.copy(
                     state = "CLOSED",
@@ -170,6 +225,14 @@ class CallLedgerStore(context: Context) {
                     .put("recommended_at", call.recommendedAt)
                     .put("last_updated_at", call.lastUpdatedAt)
                     .put("source_generated_at", call.sourceGeneratedAt)
+                    .put("strategy_id", call.strategyId)
+                    .put("strategy_name", call.strategyName)
+                    .put("setup_score", call.setupScore)
+                    .put("signal_at", call.signalAt)
+                    .put("reference_price", call.referencePrice)
+                    .put("vwap", call.vwap)
+                    .put("relative_volume", call.relativeVolume)
+                    .put("reason_codes", JSONArray(call.reasonCodes))
                     .put("closed_at", call.closedAt)
                     .put("close_reason", call.closeReason)
                     .put("broker_order_id", call.brokerOrderId)
@@ -185,6 +248,7 @@ class CallLedgerStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "ipo_sentinel_call_ledger"
         private const val KEY_CALLS = "calls_json"
-        private const val MAX_CALL_HISTORY = 250
+        private const val MAX_CALL_HISTORY = 300
+        private const val SIGNAL_EXPIRY_MINUTES = 45L
     }
 }

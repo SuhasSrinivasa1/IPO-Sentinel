@@ -17,7 +17,8 @@ data class AppState(
     val usingCachedResearch: Boolean = false,
     val calls: List<RecommendationCall> = emptyList(),
     val brokerTruth: BrokerTruthSnapshot? = null,
-    val strategySummary: StrategySummary = LocalStrategyCatalog.summary(),
+    val shadowReplay: ShadowReplaySummary? = null,
+    val strategySummary: StrategySummary = StrategySummary(),
     val lastValidatedAtMillis: Long? = null,
     val lastError: String? = null
 ) {
@@ -42,13 +43,16 @@ class AppStateRepository private constructor(context: Context) {
     private val research = DirectResearchClient(appContext)
     private val callLedger = CallLedgerStore(appContext)
     private val brokerStore = BrokerTruthStore(appContext)
+    private val strategyLab = StrategyLabEngine(appContext)
     private val mutex = Mutex()
 
+    private val initialReplay = strategyLab.cached()
     private val _state = MutableStateFlow(
         AppState(
-            strategySummary = LocalStrategyCatalog.summary(),
+            strategySummary = strategySummary(initialReplay),
             calls = callLedger.load(),
-            brokerTruth = brokerStore.load()
+            brokerTruth = brokerStore.load(),
+            shadowReplay = initialReplay
         )
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -58,10 +62,11 @@ class AppStateRepository private constructor(context: Context) {
     suspend fun initialize() = mutex.withLock {
         if (_state.value.initialized || _state.value.isRefreshing) return@withLock
         RecoveryScheduler.ensureScheduled(appContext)
+        OffMarketResearchScheduler.ensureScheduled(appContext)
 
         val (_, status) = groww.fetchStatus()
         val cachedPlan = research.cachedPlan()
-        cachedPlan?.let { callLedger.syncResearchPlan(it) }
+        val cachedReplay = strategyLab.cached()
 
         _state.value = _state.value.copy(
             isRefreshing = true,
@@ -72,18 +77,18 @@ class AppStateRepository private constructor(context: Context) {
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
             calls = callLedger.load(),
             brokerTruth = brokerStore.load(),
+            shadowReplay = cachedReplay,
+            strategySummary = strategySummary(cachedReplay),
             lastValidatedAtMillis = groww.lastValidationAtMillis(),
             lastError = null
         )
 
         val (_, plan) = research.refreshPlan(force = false)
         if (plan != null) {
-            callLedger.syncResearchPlan(plan)
             _state.value = _state.value.copy(
                 researchPlan = plan,
                 researchSources = research.sourceStatuses(),
-                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
-                calls = callLedger.load()
+                usingCachedResearch = research.sourceStatuses().any { it.usingCachedData }
             )
         }
 
@@ -99,31 +104,65 @@ class AppStateRepository private constructor(context: Context) {
                 _state.value = _state.value.copy(lastError = validationResult.error)
             }
 
+            val effectivePlan = plan ?: cachedPlan
+            val replay = strategyLab.refresh(effectivePlan)
+            callLedger.syncStrategySignals(effectivePlan, replay)
+
             val broker = RecoveryCoordinator.reconcile(appContext, "APP_OPEN", force = true)
             _state.value = _state.value.copy(
                 calls = callLedger.load(),
-                brokerTruth = broker ?: brokerStore.load()
+                brokerTruth = broker ?: brokerStore.load(),
+                shadowReplay = replay,
+                strategySummary = strategySummary(replay),
+                lastError = _state.value.lastError ?: replay.errors.firstOrNull()
             )
+        } else {
+            callLedger.syncStrategySignals(plan ?: cachedPlan, cachedReplay)
+            _state.value = _state.value.copy(calls = callLedger.load())
         }
 
         _state.value = _state.value.copy(
             initialized = true,
-            isRefreshing = false,
-            lastError = _state.value.lastError
+            isRefreshing = false
         )
     }
 
     suspend fun refreshResearch(force: Boolean = true) = mutex.withLock {
         _state.value = _state.value.copy(isRefreshing = true, lastError = null)
         val (result, plan) = research.refreshPlan(force)
-        if (plan != null) callLedger.syncResearchPlan(plan)
+        val effectivePlan = plan ?: _state.value.researchPlan
+        val replay = if (_state.value.connectionStatus?.growwConfigured == true) {
+            strategyLab.refresh(effectivePlan)
+        } else {
+            strategyLab.cached()
+        }
+        callLedger.syncStrategySignals(effectivePlan, replay)
         _state.value = _state.value.copy(
-            researchPlan = plan ?: _state.value.researchPlan,
+            researchPlan = effectivePlan,
             researchSources = research.sourceStatuses(),
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
             calls = callLedger.load(),
+            shadowReplay = replay,
+            strategySummary = strategySummary(replay),
             isRefreshing = false,
-            lastError = if (result.ok) null else result.error
+            lastError = when {
+                !result.ok -> result.error
+                replay.errors.isNotEmpty() -> replay.errors.first()
+                else -> null
+            }
+        )
+    }
+
+    suspend fun runShadowReplay() = mutex.withLock {
+        _state.value = _state.value.copy(isRefreshing = true, lastError = null)
+        val replay = strategyLab.refresh(_state.value.researchPlan)
+        callLedger.syncStrategySignals(_state.value.researchPlan, replay)
+        _state.value = _state.value.copy(
+            shadowReplay = replay,
+            strategySummary = strategySummary(replay),
+            calls = callLedger.load(),
+            isRefreshing = false,
+            lastError = replay.errors.firstOrNull()
         )
     }
 
@@ -166,6 +205,37 @@ class AppStateRepository private constructor(context: Context) {
             lastError = if (result.ok) null else result.error
         )
         result
+    }
+
+    private fun strategySummary(replay: ShadowReplaySummary): StrategySummary {
+        val families = StrategyLibrary.definitions.map { definition ->
+            val stats = replay.strategies.firstOrNull { it.strategyId == definition.id }
+            StrategyFamilyStats(
+                familyId = definition.id,
+                name = definition.name,
+                phase = definition.phase,
+                description = definition.thesis,
+                trades = stats?.trades ?: 0,
+                winRatePct = stats?.winRatePct ?: 0.0,
+                expectancyBps = stats?.expectancyBps ?: 0.0,
+                profitFactor = stats?.profitFactor ?: 0.0,
+                maxDrawdownBps = stats?.maxDrawdownBps ?: 0.0,
+                last20NetBps = stats?.last20NetBps ?: 0.0,
+                status = stats?.status ?: "RESEARCH",
+                rankingScore = stats?.rankingScore ?: 0.0
+            )
+        }.sortedByDescending { it.rankingScore }
+
+        return StrategySummary(
+            totalStrategyFamilies = families.size,
+            testedFamilies = families.count { it.trades > 0 },
+            champions = families.count { it.status == "CHAMPION" },
+            challengers = families.count { it.status == "CHALLENGER" },
+            untestedFamilies = families.count { it.trades == 0 },
+            topFive = families.take(5),
+            families = families,
+            rankingNote = "Five ensemble strategies are ranked only from stored no-lookahead shadow replay. Champion status requires at least 30 replay trades, positive expectancy, >=55% wins and profit factor >=1.25."
+        )
     }
 
     companion object {

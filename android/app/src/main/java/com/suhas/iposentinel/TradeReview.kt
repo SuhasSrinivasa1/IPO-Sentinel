@@ -12,7 +12,8 @@ import java.time.Instant
 import kotlin.math.floor
 
 data class TradeReviewSettings(
-    val budgetRupees: Int = DEFAULT_BUDGET_RUPEES
+    val budgetRupees: Int = DEFAULT_BUDGET_RUPEES,
+    val liveReviewMode: Boolean = false
 ) {
     companion object {
         const val MIN_BUDGET_RUPEES = 1_000
@@ -48,7 +49,8 @@ class TradeReviewSettingsStore(context: Context) {
             ).coerceIn(
                 TradeReviewSettings.MIN_BUDGET_RUPEES,
                 TradeReviewSettings.MAX_BUDGET_RUPEES
-            )
+            ),
+            liveReviewMode = prefs.getBoolean(KEY_LIVE_REVIEW_MODE, false)
         )
 
     fun saveBudget(value: Int): TradeReviewSettings {
@@ -58,12 +60,18 @@ class TradeReviewSettingsStore(context: Context) {
                 TradeReviewSettings.MAX_BUDGET_RUPEES
             )
         prefs.edit().putInt(KEY_BUDGET, normalized).commit()
-        return TradeReviewSettings(normalized)
+        return load()
+    }
+
+    fun saveLiveReviewMode(enabled: Boolean): TradeReviewSettings {
+        prefs.edit().putBoolean(KEY_LIVE_REVIEW_MODE, enabled).commit()
+        return load()
     }
 
     companion object {
         private const val PREFS_NAME = "ipo_sentinel_trade_review"
         private const val KEY_BUDGET = "budget_rupees"
+        private const val KEY_LIVE_REVIEW_MODE = "live_review_mode"
     }
 }
 

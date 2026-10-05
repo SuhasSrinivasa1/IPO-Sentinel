@@ -129,8 +129,11 @@ class LiveSignalScanner(context: Context) {
             } else {
                 market.fetchSessionCandles(growwSymbol, signalDate)
             }
-            if (series.candles.isNotEmpty()) {
-                ledger.reconcileMarketCandles(nseSymbol, series.candles)
+            val closedCandles = series.candles.filter {
+                !it.timestamp.isAfter(Instant.now().minusSeconds(5L * 60L))
+            }
+            if (closedCandles.isNotEmpty()) {
+                ledger.reconcileMarketCandles(nseSymbol, closedCandles)
             }
         }
     }

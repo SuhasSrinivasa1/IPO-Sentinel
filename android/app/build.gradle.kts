@@ -12,8 +12,8 @@ android {
         applicationId = "com.suhas.iposentinel.installfix"
         minSdk = 28
         targetSdk = 35
-        versionCode = 143
-        versionName = "1.4.3"
+        versionCode = 144
+        versionName = "1.4.4"
     }
 
     buildFeatures {

@@ -125,6 +125,7 @@ jobs:
           grep -n 'CallsMode.LIVE' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n 'Research candidates never appear here' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n '/v1/historical/candles' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
+          grep -n 'class CandleArchiveStore' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class ShadowReplayEngine' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt
           grep -n 'class MarketSignalWorker' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
           grep -n 'class OffMarketResearchWorker' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
@@ -165,6 +166,9 @@ jobs:
 
       - name: Compile Android
         run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Strategy unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace

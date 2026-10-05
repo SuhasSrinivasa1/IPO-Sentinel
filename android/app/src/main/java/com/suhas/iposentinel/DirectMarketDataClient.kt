@@ -9,6 +9,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
+import java.io.File
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -36,6 +39,7 @@ data class MarketSeries(
 class DirectMarketDataClient(context: Context) {
     private val appContext = context.applicationContext
     private val groww = DirectGrowwClient(appContext)
+    private val archive = CandleArchiveStore(appContext)
 
     suspend fun fetchSessionCandles(
         growwSymbol: String,
@@ -49,7 +53,9 @@ class DirectMarketDataClient(context: Context) {
             LocalDateTime.of(date, LocalTime.of(15, 45))
         }
         val start = LocalDateTime.of(date, LocalTime.of(9, 0))
-        return fetchCandles(growwSymbol, start, end, interval)
+        val series = fetchCandles(growwSymbol, start, end, interval)
+        if (series.candles.isNotEmpty()) archive.save(series.candles, growwSymbol, interval)
+        return series
     }
 
     suspend fun fetchRange(
@@ -81,9 +87,11 @@ class DirectMarketDataClient(context: Context) {
             if (!cursor.isAfter(endDate)) delay(120)
         }
 
+        val candles = out.distinctBy { it.timestamp }.sortedBy { it.timestamp }
+        if (candles.isNotEmpty()) archive.save(candles, growwSymbol, interval)
         MarketSeries(
             growwSymbol = growwSymbol,
-            candles = out.distinctBy { it.timestamp }.sortedBy { it.timestamp },
+            candles = candles,
             fetchedAt = Instant.now().toString(),
             error = if (out.isEmpty()) lastError else null
         )
@@ -229,4 +237,91 @@ class DirectMarketDataClient(context: Context) {
         private const val MAX_CHUNK_DAYS = 14L
         const val BENCHMARK_GROWW_SYMBOL = "NSE-NIFTY"
     }
+}
+
+
+data class CandleArchiveDay(
+    val growwSymbol: String,
+    val date: LocalDate,
+    val interval: String,
+    val candles: List<MarketCandle>,
+    val archivedAt: String
+)
+
+class CandleArchiveStore(context: Context) {
+    private val root = File(context.applicationContext.filesDir, "market_candle_archive").apply { mkdirs() }
+
+    fun save(candles: List<MarketCandle>, growwSymbol: String, interval: String) {
+        candles.groupBy { it.timestamp.atZone(DirectMarketDataClient.IST).toLocalDate() }
+            .forEach { (date, rows) ->
+                if (rows.isEmpty()) return@forEach
+                val json = JSONObject()
+                    .put("groww_symbol", growwSymbol)
+                    .put("date", date.toString())
+                    .put("interval", interval)
+                    .put("archived_at", Instant.now().toString())
+                    .put(
+                        "candles",
+                        JSONArray().apply {
+                            rows.sortedBy { it.timestamp }.forEach { candle ->
+                                put(
+                                    JSONArray()
+                                        .put(candle.timestamp.epochSecond)
+                                        .put(candle.open)
+                                        .put(candle.high)
+                                        .put(candle.low)
+                                        .put(candle.close)
+                                        .put(candle.volume)
+                                )
+                            }
+                        }
+                    )
+                val dir = File(root, safe(growwSymbol)).apply { mkdirs() }
+                val target = File(dir, date.toString() + "_" + safe(interval) + ".json.gz")
+                runCatching {
+                    GZIPOutputStream(target.outputStream().buffered()).use {
+                        it.write(json.toString().toByteArray(Charsets.UTF_8))
+                    }
+                }
+            }
+    }
+
+    fun load(growwSymbol: String, date: LocalDate, interval: String = "5minute"): CandleArchiveDay? {
+        val file = File(File(root, safe(growwSymbol)), date.toString() + "_" + safe(interval) + ".json.gz")
+        if (!file.exists()) return null
+        return runCatching {
+            val text = GZIPInputStream(file.inputStream().buffered()).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val json = JSONObject(text)
+            val array = json.optJSONArray("candles") ?: JSONArray()
+            val candles = buildList {
+                for (i in 0 until array.length()) {
+                    val row = array.optJSONArray(i) ?: continue
+                    if (row.length() < 6) continue
+                    add(
+                        MarketCandle(
+                            timestamp = Instant.ofEpochSecond(row.optLong(0)),
+                            open = row.optDouble(1),
+                            high = row.optDouble(2),
+                            low = row.optDouble(3),
+                            close = row.optDouble(4),
+                            volume = row.optLong(5)
+                        )
+                    )
+                }
+            }
+            CandleArchiveDay(
+                growwSymbol = json.optString("groww_symbol", growwSymbol),
+                date = LocalDate.parse(json.optString("date", date.toString())),
+                interval = json.optString("interval", interval),
+                candles = candles,
+                archivedAt = json.optString("archived_at")
+            )
+        }.getOrNull()
+    }
+
+    fun fileCount(): Int =
+        root.walkTopDown().count { it.isFile && it.name.endsWith(".json.gz") }
+
+    private fun safe(value: String): String =
+        value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
 }

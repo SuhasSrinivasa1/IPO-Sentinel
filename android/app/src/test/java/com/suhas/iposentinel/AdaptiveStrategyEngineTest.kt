@@ -58,6 +58,16 @@ class AdaptiveStrategyEngineTest {
     }
 
     @Test
+    fun shadowHoldPoliciesSpanIntradayToMultiWeek() {
+        assertEquals(1, ShadowExecutionPolicy.holdFor("listing_momentum_consensus").maxTradingSessions)
+        assertEquals(2, ShadowExecutionPolicy.holdFor("vwap_reclaim_absorption").maxTradingSessions)
+        assertEquals(5, ShadowExecutionPolicy.holdFor("breakout_retest_continuation").maxTradingSessions)
+        assertEquals(10, ShadowExecutionPolicy.holdFor("compression_expansion").maxTradingSessions)
+        assertEquals(20, ShadowExecutionPolicy.holdFor("relative_strength_continuation").maxTradingSessions)
+        assertEquals(100_000.0, ShadowExecutionPolicy.ACCOUNT_CAPITAL_RUPEES, 0.0)
+    }
+
+    @Test
     fun tooFewCandlesNeverCreatesCallSignal() {
         val start = Instant.parse("2026-10-05T03:45:00Z")
         val candles = (0 until 6).map {

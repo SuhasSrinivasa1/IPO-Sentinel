@@ -1,123 +1,111 @@
-# IPO Sentinel Architecture — v1.3.2
+# IPO Sentinel Architecture — v1.3.3
 
 ## Principle
 
-IPO Sentinel v1.3.2 is one synchronized Android application, not a collection of independent screen subsystems. All production screens consume `AppStateRepository`.
+IPO Sentinel v1.3.3 uses one shared Android state model. Research discovery, durable recommendation calls, broker reconciliation, recovery triggers, and UI state converge through `AppStateRepository`. Automatic execution remains disabled.
 
 ## Runtime graph
 
 ```text
-                         AppStateRepository
-                                |
-             -----------------------------------------
-             |                                       |
-       DirectGrowwClient                    DirectResearchClient
-             |                                       |
-   Android Keystore + TOTP            NSE session + source caches
-   Groww HTTPS authentication         IPO discovery / listing identity
-   HTTPS public-IP check              Groww NSE/CASH instrument master
-             |                                       |
-             ---------------- Shared AppState --------
-                                |
-          ------------------------------------------------
-          |                 |                 |           |
-      Dashboard          Research          Strategies   Settings
+                   AppStateRepository
+                         |
+        -------------------------------------
+        |                |                  |
+ DirectGrowwClient DirectResearchClient CallLedgerStore
+        |                |                  |
+ Keystore/TOTP      NSE/source cache    durable calls
+        |                |                  |
+        ----------- BrokerTruthClient -------
+                         |
+             Groww order list + positions
+                         |
+                RecoveryCoordinator
+                         |
+     ------------------------------------------------
+     |          |          |          |             |
+ listener     boot      app open   WorkManager    manual
+ reconnect                           periodic     reconcile
+                         |
+      Home • Calls • Research • Strategy • Settings
 ```
 
-The repository hydrates persisted Groww validation, the cached research plan, per-source health, and the local strategy catalog before/while it performs current validation and research refreshes. Screens do not own independent validation or research truth.
+## Durable call semantics
 
-## Groww session state
+A `RecommendationCall` persists independently of the activity, Compose state, notification listener, or process lifetime. It includes first recommendation, update, research-source, broker-reconciliation, and close timestamps.
 
-`DirectGrowwClient` owns:
+The call ledger is written to local application storage. Research refreshes update qualifying calls but do not close them when NSE is degraded/cached. A normal healthy research refresh may retire calls that genuinely leave the active research universe.
 
-- encrypted TOTP token/API key;
-- encrypted TOTP secret;
-- encrypted access token;
-- local TOTP generation;
-- fixed `https://api.groww.in` authentication;
-- expected static public IP;
-- user confirmation that the IP was whitelisted;
-- current HTTPS-detected public egress IP;
-- persisted last validation.
+Broker reconciliation may close a call when the app previously observed a non-zero matching broker position and a later authoritative Groww positions response reports it flat.
 
-The visible secret inputs are always blank on screen creation. Existing credentials are represented only as a saved/not-saved state.
+## Recovery contract
 
-A Groww connection is considered ready for research connectivity when authentication, Keystore, expected-IP match, and whitelist confirmation pass. That is **not** execution readiness.
+The system assumes Android/OEM process death can occur at any point.
 
-## Research source state
+Recovery triggers are deliberately redundant:
 
-The direct research client maintains independent health for:
+1. `BrokerNotificationListenerService.onListenerConnected`;
+2. Groww notification posted;
+3. `BOOT_COMPLETED`;
+4. `MY_PACKAGE_REPLACED`;
+5. application startup;
+6. network-constrained periodic WorkManager work;
+7. user-triggered reconciliation.
 
-- NSE cash-market holiday calendar;
-- NSE upcoming IPO issues;
-- NSE current IPO issues;
-- NSE forthcoming listings;
-- NSE recent listings;
-- Groww public NSE/CASH instrument master.
+All triggers invoke the same serialized `RecoveryCoordinator`. A short debounce prevents notification bursts from causing excessive broker reads.
 
-NSE requests use a bootstrapped browser-like cookie session. 401/403/429 responses trigger bounded re-bootstrap/retry. HTML/challenge responses are rejected rather than parsed as JSON.
+The notification listener is a **wake source only**. Notification text is not used as authoritative order/fill/position state. Broker truth is fetched directly using Groww's read-only order list and positions endpoints.
 
-Each successful NSE JSON response is cached with a timestamp. On a transient failure, the client may use the last successful payload and marks the source `CACHED`. If no usable cache exists, the source is `FAILED`. A failed source is never translated into “no IPOs.”
+## Groww session and broker truth
 
-## IPO identity lifecycle
+`DirectGrowwClient` owns encrypted credentials, local TOTP generation, encrypted access tokens, public-IP validation, and connection readiness.
 
-The executable identity boundary is strict:
+`BrokerTruthClient` uses direct HTTPS and reads:
+
+- CASH order list;
+- CASH positions.
+
+A recent encrypted access token is reused; 401/403 broker responses force one re-authentication and retry. Broker snapshots are themselves persisted so UI/audit can display the last reconciliation status even after process restart.
+
+No order placement, modification, or cancellation is performed by the recovery path.
+
+## Research identity boundary
 
 ```text
 DISCOVERED
-  official NSE discovery record; name association is research-only
-
-IDENTITY_VERIFIED
-  final NSE listing identity has official symbol + listing date
-  (ISIN is used when available)
-
-GROWW_SYMBOL_VERIFIED
-  exact NSE/CASH Groww instrument row matches official symbol
-  and, when available, official ISIN
-
-READY_FOR_RESEARCH
-  exact identity is resolved and official trading-calendar data is usable
-
-READY_FOR_EXECUTION
-  unavailable / false in v1.3.2
+  -> IDENTITY_VERIFIED
+  -> GROWW_SYMBOL_VERIFIED
+  -> READY_FOR_RESEARCH
 ```
 
-No fuzzy company-name match can authorize a broker symbol. If symbol and ISIN evidence disagree, resolution fails closed.
+Exact NSE/CASH broker identity is required before a research candidate enters the call ledger. Fuzzy company-name matching cannot authorize a broker symbol.
 
-## Research semantics
+Research still covers listing-day/upcoming candidates and D1-D30 Mainboard/SME names. Without live market evidence the app uses WAIT LIVE CONFIRMATION semantics rather than inventing entries, stops, targets, or confidence.
 
-The engine covers upcoming/listing-day research and the D1-D30 post-listing window across Mainboard and SME names. Research scores are not live trade signals. Without current market evidence, the UI uses **WATCH**, **RESEARCH**, and **WAIT LIVE CONFIRMATION**.
+## NSE source state
 
-The application does not fabricate entry prices, stop losses, targets, confidence, win rates, or strategy performance.
+NSE source health is independent from call state. The client caches last-known-good source payloads and marks each source FRESH, CACHED, or FAILED. Transient 403/429/HTML challenge behavior therefore degrades research freshness without erasing durable recommendations.
 
-## Strategy evidence
+## Android lifecycle integration
 
-`LocalStrategyCatalog` contains 19 strategy families. Catalog existence and evidence existence are separate concepts. v1.3.2 truthfully reports zero tested families/champions until real replay/live evidence is collected.
+The manifest declares:
+
+- INTERNET;
+- POST_NOTIFICATIONS;
+- RECEIVE_BOOT_COMPLETED;
+- `BrokerNotificationListenerService` bound through `BIND_NOTIFICATION_LISTENER_SERVICE`;
+- `RecoveryBootReceiver`;
+- FileProvider.
+
+WorkManager schedules a network-constrained 30-minute reconciliation. This is not a guarantee of exact wall-clock execution under OEM power management; it is a persistence/retry mechanism combined with listener, boot, app-open, and manual recovery triggers.
 
 ## Execution boundary
 
-Real-money automatic trading is locked off. `ValidationStatus.liveExecutionReady` is forced false by the direct Groww client and shared repository.
+`ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false. v1.3.3 is a recommendation + reconciliation release, not an auto-trading release.
 
-The legacy foreground polling loop was removed. `LiveNotificationService` is retained only as inert source/binary compatibility code and is not declared in the Android manifest.
+A future execution implementation must add safe placement, idempotent client references, order-state reconciliation, fill handling, position ownership, risk controls, and restart-safe pending actions beneath this same shared architecture.
 
-A future execution module must attach beneath the same shared repository/Groww session/research/risk state. It must not create a parallel control plane.
+## Audit and CI
 
-## Legacy backend boundary
+Weekly audit export includes call-ledger and broker-truth status in addition to application and source-health logs, while excluding credentials/tokens.
 
-The historical Python backend and `BackendApi.kt` can remain for tests/reference. Active Android files—`MainActivity`, `AppStateRepository`, `AppAudit`, and `LiveNotificationService`—must not call the legacy backend.
-
-CI enforces this boundary.
-
-## Network and security
-
-- active production networking is HTTPS only;
-- Android cleartext traffic is disabled;
-- no user-entered server endpoint;
-- no device ID/device key provisioning;
-- no secrets in Git;
-- credential values are not logged;
-- weekly audit export is local and excludes broker secrets.
-
-## CI gates
-
-The release workflow verifies version 1.3.2, secret hygiene, cleartext prohibition, shared-state presence, direct Groww/NSE endpoints, IPO lifecycle constants, locked execution readiness, absence of active `BackendApi` calls, absence of a manifest polling service, lint, Kotlin compilation, APK assembly, and SHA-256 generation.
+CI validates version 1.3.3, direct HTTPS architecture, notification/boot recovery declarations, WorkManager recovery, durable timestamps, Groww broker-read endpoints, locked execution, no active legacy BackendApi polling, lint, Kotlin compilation, APK assembly, and SHA-256 generation.

@@ -65,7 +65,7 @@ object AppAudit {
                 .put("research_health", plan?.researchHealth ?: "UNKNOWN")
                 .put("research_using_cached_data", snapshot.usingCachedResearch)
                 .put("candidate_count", plan?.candidateCount ?: 0)
-                .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)
+                .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)\n                .put("live_call_count", snapshot.liveCalls.size)\n                .put("closed_call_count", snapshot.closedCalls.size)\n                .put("broker_truth_fetched_at", snapshot.brokerTruth?.fetchedAt)\n                .put("broker_truth_error", snapshot.brokerTruth?.error)
                 .put("strategy_total", strategy.totalStrategyFamilies)
                 .put("strategy_tested", strategy.testedFamilies)
                 .put("strategy_champions", strategy.champions)
@@ -87,6 +87,44 @@ object AppAudit {
                         .put("error", source.error)
                 )
             }
+            val calls = JSONArray()
+            snapshot.calls.forEach { call ->
+                calls.put(
+                    JSONObject()
+                        .put("call_id", call.callId)
+                        .put("candidate_id", call.candidateId)
+                        .put("symbol", call.symbol)
+                        .put("company_name", call.companyName)
+                        .put("state", call.state)
+                        .put("action", call.action)
+                        .put("recommended_at", call.recommendedAt)
+                        .put("last_updated_at", call.lastUpdatedAt)
+                        .put("closed_at", call.closedAt)
+                        .put("close_reason", call.closeReason)
+                        .put("broker_order_id", call.brokerOrderId)
+                        .put("broker_order_status", call.brokerOrderStatus)
+                        .put("broker_position_quantity", call.brokerPositionQuantity)
+                        .put("last_broker_reconciled_at", call.lastBrokerReconciledAt)
+                )
+            }
+            zip.putNextEntry(ZipEntry("calls-ledger.json"))
+            zip.write(JSONObject().put("calls", calls).toString(2).toByteArray())
+            zip.closeEntry()
+
+            val broker = snapshot.brokerTruth
+            zip.putNextEntry(ZipEntry("broker-truth-status.json"))
+            zip.write(
+                JSONObject()
+                    .put("fetched_at", broker?.fetchedAt)
+                    .put("trigger", broker?.trigger)
+                    .put("order_count", broker?.orders?.size ?: 0)
+                    .put("position_count", broker?.positions?.size ?: 0)
+                    .put("error", broker?.error)
+                    .toString(2)
+                    .toByteArray()
+            )
+            zip.closeEntry()
+
             zip.putNextEntry(ZipEntry("research-source-health.json"))
             zip.write(JSONObject().put("sources", sources).toString(2).toByteArray())
             zip.closeEntry()

@@ -1,4 +1,4 @@
-name: Build IPO Sentinel Stable
+name: Build IPO Sentinel v1.3.2
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
       - "backend/**"
       - "docs/**"
       - "README.md"
+      - ".gitignore"
       - ".github/workflows/ipo-sentinel-apk.yml"
   workflow_dispatch:
 
@@ -27,8 +28,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git ls-files | grep -E '(^|/)\.private-signing/|\.(jks|keystore|p12|pfx)$|(^|/)(id_rsa|id_ed25519)$'; then
-            echo "Sensitive signing/key material is tracked. Refusing public release."
+          if git ls-files | grep -E '(^|/)\.private-signing/|\.(jks|keystore|p12|pfx)$|(^|/)(id_rsa|id_ed25519)$|(^|/)secrets\.properties$|(^|/)\.env$'; then
+            echo "Sensitive key/signing/secret material is tracked. Refusing build."
             exit 1
           fi
 
@@ -38,46 +39,33 @@ jobs:
           python-version: "3.12"
 
       - name: Install backend + tests
-        id: install
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd backend
-          python -m pip install --upgrade pip 2>&1 | tee ../ipo-backend-validation.log
-          python -m pip install -e ".[dev]" 2>&1 | tee -a ../ipo-backend-validation.log
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
 
       - name: Compile backend
-        id: compile
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd backend
-          python -m compileall -q app scripts tests 2>&1 | tee -a ../ipo-backend-validation.log
+          python -m compileall -q app scripts tests
 
       - name: Run backend tests
-        id: tests
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd backend
-          python -m pytest -q 2>&1 | tee -a ../ipo-backend-validation.log
+          python -m pytest -q
 
       - name: Dependency check
-        id: deps
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd backend
-          python -m pip check 2>&1 | tee -a ../ipo-backend-validation.log
-
-      - name: Upload backend validation log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipo-sentinel-backend-validation
-          path: ipo-backend-validation.log
-          if-no-files-found: error
-          retention-days: 7
+          python -m pip check
 
   build-apk:
     needs: backend-test
@@ -98,7 +86,9 @@ jobs:
           java-version: "17"
 
       - name: Ensure Android SDK 35
+        shell: bash
         run: |
+          set -euo pipefail
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
@@ -108,40 +98,76 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Android lint
-        run: gradle :app:lintDebug --stacktrace
-
-      - name: Build stable debug APK
-        run: gradle :app:assembleDebug --stacktrace
-
-      - name: Verify direct-auth architecture
+      - name: Architecture and security gates
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n -E 'IPO_SENTINEL_API_URL|IPO_SENTINEL_DEVICE_KEY|X-IPO-Sentinel-Device-Key|Trading Service|trading-service endpoint' app/src app/build.gradle.kts; then
-            echo "Legacy trading-service configuration remains in Android source."
-            exit 1
-          fi
-          grep -R -n 'https://api.groww.in' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
-          grep -R -n 'https://www.nseindia.com' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
-          grep -R -n 'growwapi-assets.groww.in/instruments/instrument.csv' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
-          grep -R -n 'DirectResearchClient' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
-          if grep -n -E 'fetchResearchPlan\(|fetchResearchDashboard\(|fetchStrategySummary\(' app/src/main/java/com/suhas/iposentinel/MainActivity.kt; then
-            echo "MainActivity still depends on the disabled legacy research API."
-            exit 1
-          fi
-          grep -R -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
+          ACTIVE_FILES=(
+            app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+            app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
+            app/src/main/java/com/suhas/iposentinel/AppAudit.kt
+            app/src/main/java/com/suhas/iposentinel/LiveNotificationService.kt
+          )
 
-      - name: Prepare artifact
+          grep -n 'versionCode = 132' app/build.gradle.kts
+          grep -n 'versionName = "1.3.2"' app/build.gradle.kts
+          grep -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
+          grep -n 'class AppStateRepository' app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
+          grep -n 'DirectResearchClient' app/src/main/java/com/suhas/iposentinel/AppStateRepository.kt
+          grep -n 'https://api.groww.in' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
+          grep -n 'https://www.nseindia.com' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n 'growwapi-assets.groww.in/instruments/instrument.csv' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n '"DISCOVERED"' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n '"IDENTITY_VERIFIED"' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n '"GROWW_SYMBOL_VERIFIED"' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n '"READY_FOR_RESEARCH"' app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt
+          grep -n 'liveExecutionReady = false' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
+
+          if grep -n -E 'BackendApi\(|fetchResearchPlan\(|fetchResearchDashboard\(|fetchStrategySummary\(|fetchOrderEvents\(' "${ACTIVE_FILES[@]}"; then
+            echo "Active Android architecture calls the disabled legacy BackendApi path."
+            exit 1
+          fi
+
+          if grep -n -E 'IPO_SENTINEL_API_URL|IPO_SENTINEL_DEVICE_KEY|X-IPO-Sentinel-Device-Key|Trading Service|trading-service endpoint|device key|backend URL' "${ACTIVE_FILES[@]}"; then
+            echo "Legacy user-entered service configuration leaked into active Android UI/state."
+            exit 1
+          fi
+
+          if grep -n -E 'http://' "${ACTIVE_FILES[@]}" app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt app/src/main/java/com/suhas/iposentinel/DirectResearchClient.kt; then
+            echo "Cleartext URL found in active Android networking."
+            exit 1
+          fi
+
+          if grep -n '<service' app/src/main/AndroidManifest.xml; then
+            echo "Foreground/background polling service must remain removed in v1.3.2."
+            exit 1
+          fi
+
+      - name: Android lint
+        run: gradle :app:lintDebug --stacktrace
+
+      - name: Compile Android
+        run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare verified artifact
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.1-DIRECT-RESEARCH-debug.apk
-          sha256sum release/IPO-Sentinel-v1.3.1-DIRECT-RESEARCH-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
+          test -s release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
+          sha256sum release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk > release/SHA256SUMS.txt
+          cat release/SHA256SUMS.txt
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.3.1-DIRECT-RESEARCH
-          path: android/release/*
+          name: IPO-Sentinel-v1.3.2-DIRECT
+          path: |
+            android/release/IPO-Sentinel-v1.3.2-DIRECT-debug.apk
+            android/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

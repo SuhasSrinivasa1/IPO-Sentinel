@@ -1,137 +1,123 @@
-# IPO Sentinel Architecture
+# IPO Sentinel Architecture — v1.3.2
 
-## High-level flow
+## Principle
 
-```text
-NSE/BSE listing calendar + offer docs + company filings + market context
-                              |
-                              v
-                    After-hours Research Job
-                              |
-                              v
-                    D1-D30 Active IPO Universe
-                              |
-                              v
-Android APK <---- TLS/HMAC ---- Static-IP FastAPI Backend ---- Groww Trading API
-   |                              |       |       |
-   |                              |       |       +-- Order/position reconciler
-   |                              |       +---------- Strategy + scoring engine
-   |                              +------------------ Market data / feature engine
-   |
-   +-- Live toggle
-   +-- Budget INR 10k..100k
-   +-- Next listings
-   +-- 30-day monitor
-   +-- Shadow P&L
-   +-- Decisions / reason codes
-   +-- Kill switch
-```
+IPO Sentinel v1.3.2 is one synchronized Android application, not a collection of independent screen subsystems. All production screens consume `AppStateRepository`.
 
-## Services
-
-### ListingCalendarService
-Determines the next exchange trading day and all securities scheduled to list. Weekends are trivial; holidays and exceptional exchange sessions must come from an official calendar feed. Live mode fails closed if the calendar is stale or unavailable.
-
-### IPOResearchService
-Stores only point-in-time information available before listing: RHP/DRHP facts, issue price, issue size, fresh issue vs OFS, subscription cohorts, anchor allocation, promoter ownership, financial growth, profitability, leverage, cash flow, valuation comparables, sector, use of proceeds, litigation/risk flags, and recent official company/exchange announcements.
-
-### ListingSessionService
-Tracks the special pre-open and the continuous market. It records discovered/equilibrium price, listing premium, imbalance, transition time, 1m/3m/5m/15m bars, VWAP, RVOL, spread, depth, trade velocity, buy/sell pressure, circuit band distance, and NIFTY/sector context.
-
-### PostListingMonitorService
-Every newly listed IPO remains active for the first 30 **exchange trading days**. The service stores the trading-day age and evaluates a different opportunity set after the listing day:
-
-- D1-D5 early continuation
-- D2-D10 controlled pullback
-- D2-D20 listing-anchored VWAP reclaim/hold
-- D5-D30 post-IPO base breakout
-- D5-D30 failed breakdown/reclaim
-- D5-D30 volume revival
-- D1-D30 bearish/fade evidence for intraday shorting when eligible
-
-The monitor uses listing-anchored VWAP, EMA structure, rolling high/low, relative volume, relative strength, closing-location quality, market/sector context, liquidity, circuit state and broker shortability. Expired D31+ names leave the active scanner but remain in history/replay.
-
-### StrategyEngine
-Patterns are features, not standalone commands. Regime classification selects a small compatible family set. Initial families:
-- special-pre-open equilibrium stability / imbalance
-- opening drive
-- 5m and 15m opening-range breakout
-- gap-and-go / gap-fade
-- VWAP hold / pullback / reclaim / failure
-- breakout-retest
-- failed breakout / failed breakdown
-- liquidity sweep
-- exhaustion-volume reversal
-- order-book imbalance + tape acceleration
-- relative strength vs NIFTY and sector
-- end-of-day continuation classifier for delivery hold
-- listing-anchored VWAP continuation/reclaim
-- post-IPO base breakout and volume revival
-
-### MetaScorer
-Produces expected net value and action class. It explicitly models fees, spread, slippage, estimated impact, fill probability and circuit-lock risk.
-
-### RiskEngine
-The budget slider is not silently reduced by an arbitrary conservative percentage. Position size is chosen dynamically up to the selected budget. Hard operational constraints remain non-bypassable: stale data, auth failure, unavailable shorting, unacceptable spread/impact, circuit trap, insufficient buyers/sellers, position mismatch, order uncertainty, and configured loss/stop conditions.
-
-### OwnedPositionRegistry
-Every order uses an IPO Sentinel strategy/order identifier. The registry only manages positions attributable to this application. Existing portfolio holdings are classified as EXTERNAL and are read-only.
-
-### ReplayTrainer
-Persists every feature snapshot, decision, order intent, acknowledgement, fill, exit and reason code. Nightly replay reconstructs the session without look-ahead bias. New/changed strategies remain shadow challengers until walk-forward evidence supports promotion.
-
-## State machine
+## Runtime graph
 
 ```text
-DISCOVER -> RESEARCHED -> PREOPEN_WATCH -> CONTINUOUS_WATCH
-                                        -> WAIT
-                                        -> PROBE_LONG -> BUILD_LONG -> HOLD/REDUCE/EXIT
-                                        -> PROBE_SHORT -> BUILD_SHORT -> HOLD/COVER
-                                        -> HALTED
-                                        -> D1_D30_MONITOR
-                                             -> EARLY_CONTINUATION
-                                             -> HEALTHY_PULLBACK
-                                             -> AVWAP_RECLAIM
-                                             -> POST_IPO_BASE_BREAKOUT
-                                             -> VOLUME_REVIVAL
-                                             -> INTRADAY_FADE_SHORT
-                                             -> D30_COMPLETE
+                         AppStateRepository
+                                |
+             -----------------------------------------
+             |                                       |
+       DirectGrowwClient                    DirectResearchClient
+             |                                       |
+   Android Keystore + TOTP            NSE session + source caches
+   Groww HTTPS authentication         IPO discovery / listing identity
+   HTTPS public-IP check              Groww NSE/CASH instrument master
+             |                                       |
+             ---------------- Shared AppState --------
+                                |
+          ------------------------------------------------
+          |                 |                 |           |
+      Dashboard          Research          Strategies   Settings
 ```
 
-Long delivery transitions are separate from intraday short states. A short is force-covered before the applicable broker/exchange intraday cutoff.
+The repository hydrates persisted Groww validation, the cached research plan, per-source health, and the local strategy catalog before/while it performs current validation and research refreshes. Screens do not own independent validation or research truth.
 
-## Persistence
+## Groww session state
 
-Recommended production store: PostgreSQL + TimescaleDB (or PostgreSQL hypertables where available). SQLite is acceptable for local development only.
+`DirectGrowwClient` owns:
 
-Core tables:
-- ipo_issue
-- listing_schedule
-- post_listing_watch
-- post_listing_daily_snapshot
-- research_snapshot
-- market_tick
-- candle
-- order_book_snapshot
-- feature_snapshot
-- strategy_decision
-- order_intent
-- broker_order
-- fill
-- owned_position
-- shadow_trade
-- replay_run
-- strategy_version
-- strategy_evidence
-- daily_audit
+- encrypted TOTP token/API key;
+- encrypted TOTP secret;
+- encrypted access token;
+- local TOTP generation;
+- fixed `https://api.groww.in` authentication;
+- expected static public IP;
+- user confirmation that the IP was whitelisted;
+- current HTTPS-detected public egress IP;
+- persisted last validation.
 
-All time-series rows include `event_time`, `ingested_at`, `source`, and `source_version`.
+The visible secret inputs are always blank on screen creation. Existing credentials are represented only as a saved/not-saved state.
 
-## Security
+A Groww connection is considered ready for research connectivity when authentication, Keystore, expected-IP match, and whitelist confirmation pass. That is **not** execution readiness.
 
-- TOTP/API secret stays server-side in encrypted secret storage.
-- No credentials in Git, APK resources, logs, analytics or crash reports.
-- API order traffic originates from a broker-whitelisted static public IP.
-- Android authenticates to the backend with device-bound credentials and signed requests.
-- Order submission is idempotent.
-- Live toggle state is server-authoritative and expires on credential/session uncertainty.
+## Research source state
+
+The direct research client maintains independent health for:
+
+- NSE cash-market holiday calendar;
+- NSE upcoming IPO issues;
+- NSE current IPO issues;
+- NSE forthcoming listings;
+- NSE recent listings;
+- Groww public NSE/CASH instrument master.
+
+NSE requests use a bootstrapped browser-like cookie session. 401/403/429 responses trigger bounded re-bootstrap/retry. HTML/challenge responses are rejected rather than parsed as JSON.
+
+Each successful NSE JSON response is cached with a timestamp. On a transient failure, the client may use the last successful payload and marks the source `CACHED`. If no usable cache exists, the source is `FAILED`. A failed source is never translated into “no IPOs.”
+
+## IPO identity lifecycle
+
+The executable identity boundary is strict:
+
+```text
+DISCOVERED
+  official NSE discovery record; name association is research-only
+
+IDENTITY_VERIFIED
+  final NSE listing identity has official symbol + listing date
+  (ISIN is used when available)
+
+GROWW_SYMBOL_VERIFIED
+  exact NSE/CASH Groww instrument row matches official symbol
+  and, when available, official ISIN
+
+READY_FOR_RESEARCH
+  exact identity is resolved and official trading-calendar data is usable
+
+READY_FOR_EXECUTION
+  unavailable / false in v1.3.2
+```
+
+No fuzzy company-name match can authorize a broker symbol. If symbol and ISIN evidence disagree, resolution fails closed.
+
+## Research semantics
+
+The engine covers upcoming/listing-day research and the D1-D30 post-listing window across Mainboard and SME names. Research scores are not live trade signals. Without current market evidence, the UI uses **WATCH**, **RESEARCH**, and **WAIT LIVE CONFIRMATION**.
+
+The application does not fabricate entry prices, stop losses, targets, confidence, win rates, or strategy performance.
+
+## Strategy evidence
+
+`LocalStrategyCatalog` contains 19 strategy families. Catalog existence and evidence existence are separate concepts. v1.3.2 truthfully reports zero tested families/champions until real replay/live evidence is collected.
+
+## Execution boundary
+
+Real-money automatic trading is locked off. `ValidationStatus.liveExecutionReady` is forced false by the direct Groww client and shared repository.
+
+The legacy foreground polling loop was removed. `LiveNotificationService` is retained only as inert source/binary compatibility code and is not declared in the Android manifest.
+
+A future execution module must attach beneath the same shared repository/Groww session/research/risk state. It must not create a parallel control plane.
+
+## Legacy backend boundary
+
+The historical Python backend and `BackendApi.kt` can remain for tests/reference. Active Android files—`MainActivity`, `AppStateRepository`, `AppAudit`, and `LiveNotificationService`—must not call the legacy backend.
+
+CI enforces this boundary.
+
+## Network and security
+
+- active production networking is HTTPS only;
+- Android cleartext traffic is disabled;
+- no user-entered server endpoint;
+- no device ID/device key provisioning;
+- no secrets in Git;
+- credential values are not logged;
+- weekly audit export is local and excludes broker secrets.
+
+## CI gates
+
+The release workflow verifies version 1.3.2, secret hygiene, cleartext prohibition, shared-state presence, direct Groww/NSE endpoints, IPO lifecycle constants, locked execution readiness, absence of active `BackendApi` calls, absence of a manifest polling service, lint, Kotlin compilation, APK assembly, and SHA-256 generation.

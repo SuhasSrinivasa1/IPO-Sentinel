@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 *.pyc
 .env
+.env.*
 .runtime/
 
 # Android
@@ -13,7 +14,13 @@ local.properties
 *.apk
 *.aab
 
-# Secrets
+# Secrets / signing
+.private-signing/
 *.jks
 *.keystore
+*.p12
+*.pfx
 secrets.properties
+**/secrets.properties
+id_rsa
+id_ed25519

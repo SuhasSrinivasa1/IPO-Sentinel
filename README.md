@@ -1,209 +1,133 @@
 # IPO Sentinel
 
+IPO Sentinel is an Android-first, read-only IPO research application for NSE listings. The production Android path communicates directly with Groww and official NSE sources over HTTPS. The historical Python backend remains in the repository for reference/tests, but the Android UI does not depend on it.
 
-## Current source baseline — v1.3.1 direct research mode
+## Current release target
 
-The current Android build is **v1.3.1** and uses direct device-side Groww authentication. The app stores the Groww TOTP token/API key and TOTP secret using Android Keystore-backed encryption, generates the TOTP locally, and talks to Groww over a fixed HTTPS API endpoint. There is no user-entered trading-service URL, device ID, or device key in the v1.3.0 Android flow. Cleartext HTTP is disabled in the Android manifest.
+- Version: **1.3.2**
+- Version code: **132**
+- Android application ID: `com.suhas.iposentinel.installfix`
+- Artifact: `IPO-Sentinel-v1.3.2-DIRECT-debug.apk`
+- Compile / target SDK: 35
+- Java: 17
 
-The repository still contains the earlier Python backend and Android `BackendApi` implementation as historical/research source. In the direct Android build, the legacy remote request path is disabled; broker authentication is handled by `DirectGrowwClient`, while IPO discovery/calendar/symbol resolution is handled by `DirectResearchClient` directly on the phone. Older release notes below describe the evolution of the project and should not be read as the current v1.3.0 connectivity contract.
+## v1.3.2 architecture
 
-Current Android package for the install-fix line: `com.suhas.iposentinel.installfix`. v1.3.1 keeps automatic order placement disabled while the direct-device execution/reconciliation layer remains unimplemented; research and broker validation work independently of the retired remote service. The GitHub workflow builds `IPO-Sentinel-v1.3.0-DIRECT-debug.apk` and includes a source-level gate that rejects legacy endpoint/device-key configuration in the Android client.
+The Android application has one shared application-level source of truth:
 
+```text
+                    AppStateRepository
+                           |
+              ---------------------------
+              |                         |
+       DirectGrowwClient       DirectResearchClient
+              |                         |
+       Groww HTTPS auth          Official NSE sources
+       Static egress IP          + resilient source cache
+       Android Keystore          + Groww instrument master
+              |                         |
+              -------- Shared State -----
+                           |
+        -----------------------------------------
+        |              |              |         |
+    Dashboard       Research       Strategies  Settings
+```
 
-IPO Sentinel is an isolated Android + backend project for research, shadow trading, and eventually controlled execution around newly listed NSE cash equities.
+`Dashboard`, `Research`, `Strategies`, and `Settings` all read from the same `StateFlow<AppState>`. Validation and research state are hydrated from local persistence before network refreshes update the repository.
 
-## Core contract
+## Groww authentication and secrets
 
-- Discover IPOs that are scheduled to list on the next NSE trading day.
-- Run an after-hours research job after the cash session closes.
-- Observe the special pre-open/listing process and continuous trading session.
-- Continue monitoring every newly listed IPO for its first **30 exchange trading days** for secondary opportunities.
-- Produce one of: WAIT, PROBE_LONG, BUILD_LONG, HOLD_LONG, REDUCE_LONG, FLAT, PROBE_SHORT, BUILD_SHORT, HOLD_SHORT, COVER_SHORT.
-- Long positions may persist as delivery when the thesis remains valid.
-- Short positions are intraday only and require live broker/exchange eligibility.
-- Only positions/orders created by IPO Sentinel are managed by IPO Sentinel.
-- Shadow mode is the default. Shadow capital defaults to INR 100,000.
-- Live budget is user-selectable from INR 10,000 to INR 100,000.
-- Live execution is an explicit user toggle and is OFF by default.
-- Broker credentials are never stored in the APK or committed to Git.
+Groww authentication is direct from the Android app using the Groww TOTP token/API key plus a locally generated TOTP from the saved secret. The token, TOTP secret, and generated access token are encrypted using an Android Keystore-backed AES/GCM key.
 
-## Architecture
+The app does **not** accept a custom trading-service URL, device ID, device key, backend endpoint, or cleartext HTTP endpoint. Stored secrets are never repopulated into visible Settings fields.
 
-Android (Kotlin/Jetpack Compose) is the control surface. A static-IP backend performs broker authentication, live market-data processing, strategy evaluation, position reconciliation, replay, and order routing.
+The static-IP gate compares the configured expected public IP with the current HTTPS-detected egress IP. A checkbox alone never makes the connection ready.
 
-The first implementation is deliberately split into:
+## IPO discovery and identity
 
-1. **Discovery & research** — next-listing calendar, issue/fundamental data, market/sector context.
-2. **Listing-session intelligence** — special pre-open equilibrium data, 1m/3m/5m/15m bars, VWAP, RVOL, depth, spread, order-flow, circuit proximity.
-3. **30-day post-listing monitor** — keeps each IPO active for D1-D30 trading days and looks for continuation, healthy pullback, anchored-VWAP reclaim, post-IPO base breakout, failed breakdown/reclaim, volume revival, and eligible intraday fade opportunities.
-4. **Decision engine** — regime classification + compatible strategy ensemble.
-5. **Risk/execution engine** — broker eligibility, margin, liquidity, slippage, idempotent orders, OCO/exit logic.
-6. **Owned-position registry** — isolates IPO Sentinel trades from every unrelated portfolio holding.
-7. **Replay & learning** — exact point-in-time replay, MFE/MAE, missed opportunity, exit quality, strategy attribution, champion/challenger promotion.
-8. **Shadow ledger** — daily and cumulative net P&L for a fixed virtual capital amount.
+The research pipeline deliberately separates names, NSE identities, and Groww instruments:
 
-## 30-trading-day lifecycle
+```text
+Official NSE discovery
+        |
+    DISCOVERED
+        |
+Official listing symbol/date/ISIN
+        |
+ IDENTITY_VERIFIED
+        |
+Exact Groww NSE/CASH instrument match
+        |
+ GROWW_SYMBOL_VERIFIED
+        |
+Official trading calendar + research data
+        |
+ READY_FOR_RESEARCH
+```
 
-A listing stays in the active research universe for 30 actual exchange trading days, not 30 calendar days. Weekends and official exchange holidays do not consume the monitoring window.
+`READY_FOR_EXECUTION` is not enabled in v1.3.2. Company-name association may help non-executable research grouping, but actual broker identity resolution uses official NSE symbol/ISIN and exact Groww NSE/CASH instrument rows. Identifier disagreement fails closed.
 
-The engine uses different opportunity families by age:
+## Resilient NSE client
 
-- **D1-D5:** post-listing continuation, failed listing-day move, VWAP/anchored-VWAP behavior and liquidity normalization.
-- **D2-D10:** first healthy pullback, reclaim after shakeout, renewed relative strength.
-- **D5-D30:** post-IPO base breakout, volume revival, failed breakdown/reclaim and trend continuation.
-- **D1-D30 bearish:** bearish evidence can be tracked every day, but cash short execution is intraday-only and still requires current Groww/exchange eligibility.
+`DirectResearchClient`:
 
-Every 30-day decision is also replayed in the INR 100,000 shadow account so the application learns whether listing-day, early-post-listing, or later-base opportunities have the best net expectancy.
+- bootstraps an NSE browser-like HTTPS session and cookie jar;
+- sends realistic User-Agent, Accept, Referer, language, and connection headers;
+- follows redirects;
+- retries 401/403/429 with bounded backoff and re-bootstrap;
+- rejects HTML, CAPTCHA, access-denied, and non-JSON responses;
+- defensively walks changing JSON envelopes;
+- caches each successful NSE source locally for up to seven days;
+- caches the relevant Groww instrument rows;
+- preserves the last known-good IPO universe across transient failures;
+- distinguishes **zero candidates from an available source** from **source unavailable**;
+- publishes per-source `FRESH`, `CACHED`, or `FAILED` health.
 
-## Listing-day timing assumption
+The plan cache prevents constant NSE polling; the foreground UI refresh interval is 30 minutes while the application is active.
 
-IPO Sentinel must treat the listing session as a special market state. For NSE IPO listings, the special pre-open session precedes normal trading. Continuous trading should only be enabled after the exchange transitions the symbol into the normal market session. The backend validates this state from current exchange/broker data rather than relying on a hard-coded clock alone.
+## Research and strategies
 
-## Development phases
+Research covers next-listing candidates and D1-D30 post-listing monitoring for Mainboard and SME names. Rankings are research-level only. Without live price/volume/depth evidence, the app reports **WATCH / RESEARCH / WAIT LIVE CONFIRMATION** and does not manufacture entries, stops, targets, confidence, win rates, or performance.
 
-- Phase 0: data-only discovery + three-month backfill + UI.
-- Phase 1: full shadow engine, D1-D30 monitor and replay.
-- Phase 2: one-symbol canary with tiny live quantity.
-- Phase 3: controlled scaling up to the user-selected budget.
-- Phase 4: adaptive champion/challenger strategy weighting.
+The local strategy catalog contains 19 strategy families. Until replay/live evidence exists, the truthful state is:
 
-See `docs/ARCHITECTURE.md` and `docs/RESEARCH_PLAN.md`.
+- Total: 19
+- Tested: 0
+- Champions: 0
 
+## Live execution
 
-## Groww settings (v0.4)
+Automatic real-money order placement is intentionally **locked off** in v1.3.2. The prior foreground service no longer polls `BackendApi`, and the manifest contains no polling service. Direct execution must not be enabled until order placement, reconciliation, fill tracking, position ownership isolation, order-state tracking, and risk controls exist under the same shared architecture.
 
-The Android UI deliberately hides service-transport details. There is no user-facing backend URL, HTTP/HTTPS field, or admin-key field.
+## Notifications and audit
 
-The Settings tab contains only the trading inputs the user actually needs:
+The app requests the normal Android `POST_NOTIFICATIONS` permission only. It does not request notification-listener access to read other apps' notifications. Settings includes **Send Test Notification** and local weekly audit export. Audit exports exclude Groww secrets and access tokens.
 
-- Groww TOTP token / API key
-- Groww TOTP secret
-- Whitelisted static public IP
-- Confirmation that the static IP has been whitelisted in Groww
+## Security
 
-The Dashboard no longer duplicates Settings with a separate "Configure Groww Connection" button.
+- `android:usesCleartextTraffic="false"`
+- HTTPS-only active networking
+- Android Keystore-backed credential encryption
+- no credentials or signing keys in the repository
+- GitHub Actions secret-hygiene gate
+- CI architecture gates prevent active Android UI/state from calling the legacy backend path
 
-### Internal service configuration
+## CI / build
 
-The static-IP trading service remains part of the architecture because API order placement must originate from the fixed whitelisted public IP. Its endpoint and device key are deployment/build configuration, not user settings.
+`.github/workflows/ipo-sentinel-apk.yml` runs:
 
-Android build variables:
-- `IPO_SENTINEL_API_URL`
-- `IPO_SENTINEL_DEVICE_KEY`
+1. public-repository secret hygiene checks;
+2. Python backend compile/tests/dependency check;
+3. Java 17 + Android SDK 35 setup;
+4. Android architecture/security gates;
+5. Android lint;
+6. Kotlin compilation;
+7. debug APK assembly;
+8. SHA-256 generation;
+9. artifact upload containing the actual APK and `SHA256SUMS.txt`.
 
-Trading-service environment:
-- `IPO_SENTINEL_DEVICE_KEY`
-- `IPO_SENTINEL_MASTER_KEY`
-- optional `IPO_SENTINEL_SETTINGS_FILE`
+The expected artifact file is `IPO-Sentinel-v1.3.2-DIRECT-debug.apk`.
 
-The TOTP token and secret are never returned by the settings APIs. They are encrypted at rest using the master key.
+## Historical backend
 
-### User flow
-
-1. Open **Settings**.
-2. Enter Groww TOTP token/API key and TOTP secret.
-3. Enter the fixed static public IP whitelisted in Groww.
-4. Confirm the Groww whitelist checkbox.
-5. Tap **Save Groww Settings**.
-6. Tap **Validate Groww + Static IP**.
-7. Live auto-trading remains locked until Groww authentication and the static-IP checks pass.
-
-
-## Stable Android behavior (v1.0.0)
-
-IPO Sentinel v1.0.0 consolidates the control application into three tabs: **Dashboard**, **Strategies**, and **Settings**.
-
-### Notifications
-
-- Android 13+ requests the standard `POST_NOTIFICATIONS` permission on first launch.
-- IPO Sentinel does **not** request Notification Listener access and does not read notifications from other applications.
-- Live mode starts a foreground order-event monitor so the user can receive order lifecycle notifications while the market session is active.
-- Supported lifecycle notifications include order submission, broker acknowledgement, partial/complete fill, exit submission, position closed, rejection/cancellation, force-flat, and risk halt.
-- A **Send Test Notification** button is available in Settings.
-- The backend order gateway emits lifecycle events before submission and as Groww order state changes.
-
-### Weekly audit export
-
-Settings includes **Export Weekly Logs**. It creates a ZIP containing:
-
-- `app-audit.jsonl` — Android-side state changes and validation events.
-- `backend-audit.jsonl` — server-side decisions, Groww validation, live-state changes, order lifecycle events and related audit entries when the service is reachable.
-- `metadata.json` — version, export time and audit period.
-
-Groww TOTP/API secrets are intentionally excluded from audit exports.
-
-### Strategies offline behavior
-
-The APK contains the registered 19-family strategy catalog. If the static-IP trading service has not yet been provisioned, the Strategies tab remains usable and shows the catalog with zero tested/champion counts rather than showing the whole screen as unavailable. Replay evidence replaces the local zero-state automatically when the backend becomes reachable.
-
-### Live state
-
-Live trading state is server-authoritative. Enabling live mode requires Groww authentication and static-IP validation to pass. The selected budget is locked while live mode is armed. The Android foreground monitor is started only after the server acknowledges the live state.
-
-### Build validation
-
-The stable GitHub workflow compiles and tests the IPO backend, runs its pytest suite and dependency check, runs Android lint, and only then builds the APK artifact.
-
-
-## Final autonomous research release (v1.1.0)
-
-This release freezes the automated IPO-discovery and listing-day identity workflow.
-
-- Research runs independently of Groww authentication and refreshes again immediately after a successful Groww validation.
-- A full NSE IPO research refresh runs every calendar day at 16:05 IST, including Saturdays and Sundays, plus at backend startup.
-- Weekdays revalidate at 08:30 IST and repeatedly through the new-listing special pre-open / continuous-market transition.
-- IPO research does not require a trading symbol. Candidates can exist in a pre-symbol state using official issue identity, ISIN when available, company identity and issue dates.
-- Live identity is authorized only after the official NSE forthcoming-listing source provides the listing symbol/date and the Groww NSE CASH instrument resolves exactly.
-- When ISIN is available, both NSE trading symbol and ISIN must agree exactly; ambiguous or conflicting rows fail closed.
-- Groww instrument metadata is rechecked for exchange token, series, lot size, tick size, freeze quantity, buy/sell permission and live availability.
-- Listing-day auto execution is disabled during NSE special pre-open. The engine may observe 09:00-10:00, but continuous-market orders are not eligible before 10:00 IST and still require fresh quote, market depth, liquidity, spread, impact, circuit, position and order-state gates.
-- The dashboard exposes daily research health, next-trading-day candidates, next-week candidates, NSE identity confirmation and Groww resolution state.
-
-
-## Trader-audit hardening release (v1.1.1)
-
-This release keeps the v1.1.0 autonomous IPO research and exact-identity workflow and adds execution hardening based on a listing-day trader audit:
-
-- Fast NSE/Groww identity rechecks continue through 11:00 IST so delayed broker instrument publication does not leave the listing watch stale after 10:15.
-- Listing-day live quotes must have a last trade no older than 15 seconds; D2-D30 execution uses a 30-second maximum.
-- The order gateway independently derives the live spread from Groww bid/offer/depth and uses the more conservative value when an upstream strategy also supplies a spread estimate.
-- The gateway estimates requested-quantity book impact from the live opposing depth and blocks when visible depth cannot absorb the order or estimated impact is excessive.
-- Groww freeze quantity and tick size are enforced before submission.
-- Unknown product strings are rejected instead of silently falling back to CNC.
-- During 10:00-10:05 on listing day, new MARKET entries are blocked; price-controlled orders may proceed only if all identity, quote, depth, liquidity, spread, impact, circuit, reconciliation, position-isolation and budget gates pass.
-- The displayed 09:00-09:45 special-pre-open rule now matches the execution policy: IPO Sentinel observes that phase and does not auto-submit continuous-market orders.
-
-
-## Settings and provisioning stability release (v1.1.2)
-
-- Unsaved Groww token and TOTP-secret edits remain in memory while switching between Dashboard, Strategies and Settings.
-- Static-IP draft and whitelist confirmation persist locally across tab changes and app restarts.
-- Successfully saved credentials remain backend-only and are intentionally not repopulated into Android fields; the UI now shows a clear saved-state explanation.
-- Saving Groww settings now automatically triggers validation so readiness updates immediately.
-- Settings now displays explicit trading-service provisioning state (HTTPS endpoint and device authentication) instead of the ambiguous generic error.
-- Live trading still fails closed if the APK has not been built with a real HTTPS trading-service endpoint and device key. The application does not fabricate or fall back to direct device-side broker execution.
-
-
-## IPO intelligence and managed-trading release (v1.2.0)
-
-- Fresh installations seed the active universe from official NSE recent listings as well as current/forthcoming issues, then maintain the listing-day through D30 opportunity set.
-- The ₹5,000 daily objective is calculated only from IPO Sentinel's own reconciled broker fills. Groww account-level P&L and unrelated user holdings are excluded.
-- Exact NSE/Groww-resolved D1-D30 candidates are scanned each market minute using price/VWAP, relative volume, first-five-minute structure, spread, order-book quantities and circuit distance.
-- READY signals require an estimated post-cost edge of at least 0.5% of the configured budget and create Android signal notifications.
-- Research cards show direction, entry, T1/T2, stop, quantity, confidence, RVOL and reasons. Card BUY is CNC/delivery; fresh SHORT is MIS only.
-- Manual card orders work with auto mode OFF but still require static-IP, official identity, exact broker instrument, market-depth, circuit, order-state and position-isolation gates.
-- When auto mode is armed, guarded READY signals can submit entries. App-owned positions remain managed after entry; T1 can take one 50% partial and T2/stop can close the remainder.
-- IPO Sentinel registered orders and app-owned positions are reconciled every 30 seconds independently of the auto-entry switch.
-- The Android Research tab exposes Top 3, tomorrow's queue, active D1-D30 universe, signals, managed positions, partial exits, closed WIN/LOSS calls, daily objective progress and learning history.
-- Daily after-market review records outcomes and weak strategy families. Sunday revalidation retains proven CHAMPION families and flags repeatedly negative families for rework/demotion.
-
-Live execution remains fail-closed: research may use broader discovery inputs, but no order is authorized from a guessed ticker, third-party symbol match, stale quote, unresolved Groww instrument, uncertain broker state or unrelated portfolio inventory.
-
-
-## v1.2.1 install-fix package
-
-This release intentionally uses Android applicationId `com.suhas.iposentinel.installfix`.
-It exists to bypass stale multi-user/work-profile package records for the earlier
-`com.suhas.iposentinel` debug-signed builds. Trading/research behavior is unchanged
-from v1.2.0. Future production releases should return to a stable package identity only
-after a persistent release-signing key is configured in CI.
+`backend/` and `BackendApi.kt` remain for historical/reference/test purposes. The production Android screens, shared state repository, audit export, and notification path do not call that legacy remote API.

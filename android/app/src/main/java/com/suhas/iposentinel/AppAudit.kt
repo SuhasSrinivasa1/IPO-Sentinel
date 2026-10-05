@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
@@ -18,10 +19,9 @@ object AppAudit {
 
     fun log(context: Context, eventType: String, payload: JSONObject = JSONObject()) {
         runCatching {
-            val dir = auditDir(context)
-            dir.mkdirs()
+            val dir = auditDir(context).apply { mkdirs() }
             val day = LocalDate.now(ZoneOffset.UTC).toString()
-            val file = File(dir, day + ".jsonl")
+            val file = File(dir, "$day.jsonl")
             val record = JSONObject()
                 .put("timestamp", Instant.now().toString())
                 .put("event_type", eventType)
@@ -34,72 +34,61 @@ object AppAudit {
         val dir = auditDir(context)
         if (!dir.exists()) return ""
         val today = LocalDate.now(ZoneOffset.UTC)
-        val wanted = (0 until days).map { offset -> today.minusDays(offset.toLong()).toString() }.toSet()
+        val wanted = (0 until days).map { today.minusDays(it.toLong()).toString() }.toSet()
         return dir.listFiles()
-            ?.filter { file -> file.extension == "jsonl" && file.nameWithoutExtension in wanted }
-            ?.sortedBy { file -> file.name }
-            ?.joinToString(separator = "") { file -> file.readText() }
+            ?.filter { it.extension == "jsonl" && it.nameWithoutExtension in wanted }
+            ?.sortedBy { it.name }
+            ?.joinToString("") { it.readText() }
             .orEmpty()
     }
 
     suspend fun exportWeekly(context: Context): File = withContext(Dispatchers.IO) {
-        val api = BackendApi()
-        val backendResult = api.exportAudit(7)
-        val (_, liveState) = api.fetchLiveState()
-        val (_, strategySummary) = api.fetchStrategySummary()
+        val snapshot = AppStateRepository.get(context).snapshot()
+        val strategy = snapshot.strategySummary
+        val plan = snapshot.researchPlan
         val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
         val safeTime = Instant.now().toString().replace(":", "-")
-        val zipFile = File(exportDir, "IPO-Sentinel-Weekly-Audit-" + safeTime + ".zip")
+        val zipFile = File(exportDir, "IPO-Sentinel-Weekly-Audit-$safeTime.zip")
 
         ZipOutputStream(zipFile.outputStream().buffered()).use { zip ->
             zip.putNextEntry(ZipEntry("app-audit.jsonl"))
             zip.write(localAudit(context, 7).toByteArray())
             zip.closeEntry()
 
-            zip.putNextEntry(ZipEntry("backend-audit.jsonl"))
-            val backendText = if (backendResult.ok) {
-                backendResult.body
-            } else {
-                JSONObject()
-                    .put("timestamp", Instant.now().toString())
-                    .put("event_type", "BACKEND_AUDIT_UNAVAILABLE")
-                    .put("error", backendResult.error ?: "unknown")
-                    .toString() + "\n"
-            }
-            zip.write(backendText.toByteArray())
-            zip.closeEntry()
-
-            zip.putNextEntry(ZipEntry("weekly-summary.json"))
             val summary = JSONObject()
                 .put("app_version", BuildConfig.VERSION_NAME)
                 .put("exported_at", Instant.now().toString())
                 .put("period_days", 7)
-                .put("backend_audit_included", backendResult.ok)
-                .put("live_enabled", liveState?.enabled)
-                .put("live_budget_rupees", liveState?.budgetRupees)
-                .put("strategy_total", strategySummary?.totalStrategyFamilies)
-                .put("strategy_tested", strategySummary?.testedFamilies)
-                .put("strategy_champions", strategySummary?.champions)
-                .put("strategy_challengers", strategySummary?.challengers)
-                .put("strategy_untested", strategySummary?.untestedFamilies)
+                .put("groww_connection_ready", snapshot.growwConnectionReady)
+                .put("live_execution_ready", false)
+                .put("next_trading_day", plan?.nextTradingDay)
+                .put("research_health", plan?.researchHealth ?: "UNKNOWN")
+                .put("research_using_cached_data", snapshot.usingCachedResearch)
+                .put("candidate_count", plan?.candidateCount ?: 0)
+                .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)
+                .put("strategy_total", strategy.totalStrategyFamilies)
+                .put("strategy_tested", strategy.testedFamilies)
+                .put("strategy_champions", strategy.champions)
                 .put("notification_permission", NotificationHelper.notificationsAllowed(context))
-                .put("note", "Groww TOTP token and secret are never included in audit exports.")
+                .put("note", "Groww credentials and access tokens are never included. Live execution is locked off.")
+
+            zip.putNextEntry(ZipEntry("weekly-summary.json"))
             zip.write(summary.toString(2).toByteArray())
             zip.closeEntry()
 
-            zip.putNextEntry(ZipEntry("strategy-summary.json"))
-            val strategyJson = if (strategySummary != null) {
-                JSONObject()
-                    .put("total", strategySummary.totalStrategyFamilies)
-                    .put("tested", strategySummary.testedFamilies)
-                    .put("champions", strategySummary.champions)
-                    .put("challengers", strategySummary.challengers)
-                    .put("untested", strategySummary.untestedFamilies)
-                    .put("ranking_note", strategySummary.rankingNote)
-            } else {
-                JSONObject().put("available", false)
+            val sources = JSONArray()
+            snapshot.researchSources.forEach { source ->
+                sources.put(
+                    JSONObject()
+                        .put("name", source.name)
+                        .put("status", source.status)
+                        .put("using_cached_data", source.usingCachedData)
+                        .put("last_success_at", source.lastSuccessAt)
+                        .put("error", source.error)
+                )
             }
-            zip.write(strategyJson.toString(2).toByteArray())
+            zip.putNextEntry(ZipEntry("research-source-health.json"))
+            zip.write(JSONObject().put("sources", sources).toString(2).toByteArray())
             zip.closeEntry()
         }
 
@@ -108,11 +97,7 @@ object AppAudit {
     }
 
     fun shareExport(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(
-            context,
-            BuildConfig.APPLICATION_ID + ".fileprovider",
-            file
-        )
+        val uri = FileProvider.getUriForFile(context, BuildConfig.APPLICATION_ID + ".fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/zip"
             putExtra(Intent.EXTRA_STREAM, uri)

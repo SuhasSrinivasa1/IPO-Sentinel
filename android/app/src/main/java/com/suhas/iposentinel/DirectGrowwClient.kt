@@ -25,9 +25,9 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Direct, device-side Groww authentication.
  *
- * Groww credentials are encrypted with a key held in Android Keystore and the
- * broker base URL is fixed to Groww HTTPS. No custom control-plane configuration
- * is accepted by this client.
+ * Credentials are encrypted with an Android Keystore-backed key. The broker
+ * endpoint is fixed to Groww HTTPS and no user-entered server endpoint exists.
+ * This client validates connectivity only; v1.3.2 never declares execution ready.
  */
 class DirectGrowwClient(context: Context) {
     private val appContext = context.applicationContext
@@ -49,7 +49,6 @@ class DirectGrowwClient(context: Context) {
         }
 
         try {
-            // Validate the secret format before persisting it.
             decodeBase32(secret)
             store.saveCredentials(token, secret)
             prefs.edit()
@@ -64,10 +63,9 @@ class DirectGrowwClient(context: Context) {
 
     suspend fun fetchStatus(): Pair<ApiResult, ConnectionStatus?> = withContext(Dispatchers.IO) {
         try {
-            val configured = store.hasCredentials()
             val status = ConnectionStatus(
                 secretStoreReady = store.isReady(),
-                growwConfigured = configured,
+                growwConfigured = store.hasCredentials(),
                 expectedStaticIp = prefs.getString(KEY_EXPECTED_IP, null)?.takeIf { it.isNotBlank() },
                 staticIpConfirmed = prefs.getBoolean(KEY_IP_CONFIRMED, false),
                 error = null
@@ -91,12 +89,15 @@ class DirectGrowwClient(context: Context) {
                 secretStoreReady = json.optBoolean("secret_store_ready", false),
                 calendarReady = json.optBoolean("calendar_ready", false),
                 nseIdentitySourceReady = json.optBoolean("nse_identity_source_ready", false),
-                liveExecutionReady = json.optBoolean("live_execution_ready", false),
+                liveExecutionReady = false,
                 growwError = json.optString("groww_error").ifBlank { null },
                 egressError = json.optString("egress_error").ifBlank { null }
             )
         }.getOrNull()
     }
+
+    fun lastValidationAtMillis(): Long? =
+        prefs.getLong(KEY_LAST_VALIDATION_AT, 0L).takeIf { it > 0L }
 
     suspend fun validate(): Pair<ApiResult, ValidationStatus?> = withContext(Dispatchers.IO) {
         val expectedIp = prefs.getString(KEY_EXPECTED_IP, null)?.trim()?.takeIf { it.isNotEmpty() }
@@ -114,10 +115,7 @@ class DirectGrowwClient(context: Context) {
             val auth = authenticate(credentials.first, totp)
             if (auth.first.ok) {
                 growwOk = true
-                val accessToken = auth.second
-                if (!accessToken.isNullOrBlank()) {
-                    store.saveAccessToken(accessToken)
-                }
+                auth.second?.takeIf { it.isNotBlank() }?.let { store.saveAccessToken(it) }
             } else {
                 growwError = auth.first.error ?: "Groww authentication failed."
             }
@@ -132,11 +130,7 @@ class DirectGrowwClient(context: Context) {
         }
 
         val staticMatches = expectedIp != null && detectedIp != null && expectedIp == detectedIp
-        val nseChecks = try {
-            probeNse()
-        } catch (_: Exception) {
-            false to false
-        }
+        val nseChecks = runCatching { probeNse() }.getOrDefault(false to false)
 
         val value = ValidationStatus(
             growwAuthOk = growwOk,
@@ -147,7 +141,9 @@ class DirectGrowwClient(context: Context) {
             secretStoreReady = store.isReady(),
             calendarReady = nseChecks.first,
             nseIdentitySourceReady = nseChecks.second,
-            liveExecutionReady = growwOk && staticMatches && confirmed && nseChecks.first && nseChecks.second,
+            // Deliberately false until direct order placement, reconciliation,
+            // ownership isolation, fill tracking and risk controls are complete.
+            liveExecutionReady = false,
             growwError = growwError,
             egressError = egressError
         )
@@ -165,7 +161,7 @@ class DirectGrowwClient(context: Context) {
             .put("secret_store_ready", value.secretStoreReady)
             .put("calendar_ready", value.calendarReady)
             .put("nse_identity_source_ready", value.nseIdentitySourceReady)
-            .put("live_execution_ready", value.liveExecutionReady)
+            .put("live_execution_ready", false)
             .put("groww_error", value.growwError)
             .put("egress_error", value.egressError)
         prefs.edit()
@@ -178,8 +174,7 @@ class DirectGrowwClient(context: Context) {
         try {
             val credentials = store.loadCredentials()
                 ?: return@withContext ApiResult(false, 401, "", "Groww TOTP credentials are not saved.") to null
-            val totp = generateTotp(credentials.second)
-            authenticate(credentials.first, totp)
+            authenticate(credentials.first, generateTotp(credentials.second))
         } catch (e: Exception) {
             ApiResult(false, 500, "", safeMessage(e)) to null
         }
@@ -204,12 +199,12 @@ class DirectGrowwClient(context: Context) {
 
         val code = connection.responseCode
         val body = readBody(connection, code)
+        connection.disconnect()
         if (code !in 200..299) {
             return ApiResult(false, code, "", brokerError(body, code)) to null
         }
 
-        val json = JSONObject(body)
-        val token = json.optString("token").trim()
+        val token = JSONObject(body).optString("token").trim()
         if (token.isBlank()) {
             return ApiResult(false, code, "", "Groww authenticated but did not return an access token.") to null
         }
@@ -221,20 +216,18 @@ class DirectGrowwClient(context: Context) {
             requestMethod = "GET"
             connectTimeout = 8_000
             readTimeout = 8_000
+            instanceFollowRedirects = true
             setRequestProperty("Accept", "application/json")
         }
         val code = connection.responseCode
         val body = readBody(connection, code)
+        connection.disconnect()
         if (code !in 200..299) throw IllegalStateException("Public-IP check returned HTTP $code")
         val ip = JSONObject(body).optString("ip").trim()
         if (ip.isBlank()) throw IllegalStateException("Public-IP check returned no address")
         return ip
     }
 
-    /**
-     * Probe the two official NSE dependencies used as fail-closed readiness gates.
-     * First boolean = cash-market calendar source, second = listing-identity source.
-     */
     private fun probeNse(): Pair<Boolean, Boolean> {
         val previous = CookieHandler.getDefault()
         val cookieManager = CookieManager(null, CookiePolicy.ACCEPT_ALL)
@@ -243,8 +236,7 @@ class DirectGrowwClient(context: Context) {
             nseGet("/market-data/all-upcoming-issues-ipo", expectJson = false)
             val calendarReady = runCatching {
                 val body = nseGet("/api/holiday-master?type=trading", expectJson = true)
-                val json = JSONObject(body)
-                json.has("CM")
+                JSONObject(body).has("CM")
             }.getOrDefault(false)
 
             val identityReady = runCatching {
@@ -262,20 +254,44 @@ class DirectGrowwClient(context: Context) {
     }
 
     private fun nseGet(path: String, expectJson: Boolean): String {
-        val connection = (URL(NSE_BASE + path).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 10_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", BROWSER_UA)
-            setRequestProperty("Accept", if (expectJson) "application/json, text/plain, */*" else "text/html,application/xhtml+xml")
-            setRequestProperty("Accept-Language", "en-US,en;q=0.9")
-            setRequestProperty("Referer", NSE_BASE + "/market-data/all-upcoming-issues-ipo")
+        var lastError = "NSE readiness check failed"
+        repeat(2) { attempt ->
+            val connection = (URL(NSE_BASE + path).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", BROWSER_UA)
+                setRequestProperty("Accept", if (expectJson) "application/json, text/plain, */*" else "text/html,application/xhtml+xml")
+                setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+                setRequestProperty("Referer", NSE_BASE + "/market-data/all-upcoming-issues-ipo")
+                setRequestProperty("Connection", "keep-alive")
+            }
+            val code = connection.responseCode
+            val type = connection.contentType.orEmpty()
+            val body = readBody(connection, code)
+            connection.disconnect()
+
+            if (code in 200..299) {
+                if (expectJson) {
+                    val trimmed = body.trim()
+                    val looksJson = trimmed.startsWith("{") || trimmed.startsWith("[")
+                    val looksBlocked = trimmed.startsWith("<", true) ||
+                        trimmed.contains("captcha", true) ||
+                        trimmed.contains("access denied", true)
+                    if (!looksJson || looksBlocked || (type.isNotBlank() && !type.contains("json", true) && !looksJson)) {
+                        throw IllegalStateException("NSE returned a non-JSON/block response")
+                    }
+                }
+                return body
+            }
+            lastError = "NSE readiness check returned HTTP $code"
+            if (code !in setOf(401, 403, 429) || attempt == 1) {
+                throw IllegalStateException(lastError)
+            }
+            Thread.sleep(600L * (attempt + 1))
         }
-        val code = connection.responseCode
-        val body = readBody(connection, code)
-        if (code !in 200..299) throw IllegalStateException("NSE readiness check returned HTTP $code")
-        return body
+        throw IllegalStateException(lastError)
     }
 
     private fun readBody(connection: HttpURLConnection, code: Int): String {
@@ -328,8 +344,6 @@ class DirectGrowwClient(context: Context) {
 
     private fun safeMessage(error: Throwable): String =
         error.message?.take(240)?.ifBlank { null } ?: error.javaClass.simpleName
-
-    private data class Credentials(val apiKey: String, val secret: String)
 
     private class SecureGrowwStore(context: Context) {
         private val prefs = context.getSharedPreferences(SECURE_PREFS, Context.MODE_PRIVATE)

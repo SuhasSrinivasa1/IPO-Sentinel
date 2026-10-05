@@ -11,18 +11,27 @@ import java.net.CookiePolicy
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+data class ResearchSourceStatus(
+    val name: String,
+    val status: String,
+    val usingCachedData: Boolean,
+    val lastSuccessAt: String?,
+    val error: String?
+)
+
 /**
- * Direct, read-only IPO research path for the Android client.
+ * Direct, read-only IPO research path.
  *
- * This client intentionally does not place orders. It builds the IPO research
- * universe directly from official NSE sources and resolves final NSE symbols
- * against Groww's public NSE/CASH instrument master.
+ * Official NSE discovery is kept separate from final listing identity and from
+ * Groww instrument resolution. Company-name association is research-only; it
+ * is never used to authorize an executable identity.
  */
 class DirectResearchClient(context: Context) {
     private val appContext = context.applicationContext
@@ -32,7 +41,7 @@ class DirectResearchClient(context: Context) {
         withContext(Dispatchers.IO) {
             val cached = loadCachedPlan()
             val savedAt = prefs.getLong(KEY_SAVED_AT, 0L)
-            if (!force && cached != null && System.currentTimeMillis() - savedAt < CACHE_TTL_MS) {
+            if (!force && cached != null && System.currentTimeMillis() - savedAt < PLAN_CACHE_TTL_MS) {
                 return@withContext ApiResult(true, 200, "{}", null) to cached
             }
 
@@ -41,10 +50,11 @@ class DirectResearchClient(context: Context) {
                 savePlan(plan)
                 ApiResult(true, 200, "{}", null) to plan
             } catch (error: Exception) {
+                val message = "DIRECT_REFRESH:" + safeMessage(error)
                 if (cached != null) {
                     val degraded = cached.copy(
                         researchHealth = "DEGRADED",
-                        errors = (cached.errors + "DIRECT_REFRESH:" + safeMessage(error)).distinct()
+                        errors = (cached.errors + message).distinct()
                     )
                     return@withContext ApiResult(true, 200, "{}", null) to degraded
                 }
@@ -57,18 +67,16 @@ class DirectResearchClient(context: Context) {
         if (!result.ok || plan == null) return result to null
 
         val active30 = plan.allKnownCandidates
-            .filter { it.nseListingConfirmed && (it.tradingDayNumber ?: 0) in 1..30 }
+            .filter { (it.tradingDayNumber ?: 0) in 1..30 }
             .sortedWith(compareBy<ResearchCandidate> { it.tradingDayNumber ?: 99 }.thenBy { it.symbol ?: "" })
 
-        val rankedPool = (plan.nextTradingDayCandidates + active30)
+        val ranked = (plan.nextTradingDayCandidates + active30)
             .distinctBy { it.candidateId }
-
-        val ranked = rankedPool
             .map { rankCandidate(it, plan.nextTradingDay) }
             .sortedByDescending { it.researchScore }
             .take(3)
 
-        val dashboard = ResearchDashboard(
+        return ApiResult(true, 200, "{}", null) to ResearchDashboard(
             generatedAt = plan.generatedAt,
             dailyGoal = DailyGoalStatus(
                 date = LocalDate.now(IST).toString(),
@@ -87,147 +95,143 @@ class DirectResearchClient(context: Context) {
             weeklyLearning = emptyList(),
             mainboardCoverage = (plan.nextTradingDayCandidates + active30).count { !it.isSme },
             smeCoverage = (plan.nextTradingDayCandidates + active30).count { it.isSme },
-            coverageRule = "Direct research is read-only: official NSE identity + exact Groww NSE/CASH instrument resolution. Live price/depth signals and order execution are not enabled in this build."
+            coverageRule = "Research only: official NSE identity -> exact Groww NSE/CASH instrument. Live prices, depth and order execution are not enabled."
         )
-        return ApiResult(true, 200, "{}", null) to dashboard
     }
 
     fun cachedPlan(): ResearchPlan? = loadCachedPlan()
+
+    fun sourceStatuses(): List<ResearchSourceStatus> {
+        val array = runCatching {
+            JSONArray(prefs.getString(KEY_SOURCE_STATUSES, "[]"))
+        }.getOrElse { JSONArray() }
+        return buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                add(
+                    ResearchSourceStatus(
+                        name = obj.optString("name"),
+                        status = obj.optString("status", "UNKNOWN"),
+                        usingCachedData = obj.optBoolean("using_cached_data", false),
+                        lastSuccessAt = obj.optString("last_success_at").ifBlank { null },
+                        error = obj.optString("error").ifBlank { null }
+                    )
+                )
+            }
+        }
+    }
 
     private fun buildPlan(priorPlan: ResearchPlan?): ResearchPlan {
         val now = ZonedDateTime.now(IST)
         val today = now.toLocalDate()
         val errors = mutableListOf<String>()
+        val statuses = mutableListOf<ResearchSourceStatus>()
+        val rawIssues = mutableListOf<RawIssue>()
         val session = NseSession()
 
         var calendarReady = false
         var holidays = emptySet<LocalDate>()
-        var issueSourceReady = false
-        val rawIssues = mutableListOf<RawIssue>()
+        var discoveryAvailable = false
+        var identityAvailable = false
 
         try {
-            try {
-                holidays = parseHolidays(session.json(NSE_HOLIDAYS))
+            val holidayLoad = loadNseSource(session, "NSE_HOLIDAY_SOURCE", NSE_HOLIDAYS)
+            statuses += holidayLoad.status
+            holidayLoad.value?.let {
+                holidays = parseHolidays(it)
                 calendarReady = holidays.isNotEmpty()
-                if (!calendarReady) errors += "NSE_HOLIDAY_SOURCE:EMPTY"
-            } catch (error: Exception) {
-                errors += "NSE_HOLIDAY_SOURCE:" + error.javaClass.simpleName
+                if (!calendarReady) errors += "NSE_HOLIDAY_SOURCE:EMPTY_OR_INVALID"
             }
+            holidayLoad.status.error?.let { errors += "NSE_HOLIDAY_SOURCE:" + it }
 
             for ((path, source) in listOf(
                 NSE_UPCOMING to "NSE_UPCOMING_ISSUES",
                 NSE_CURRENT to "NSE_CURRENT_ISSUES"
             )) {
-                try {
-                    val rows = extractIssueRecords(session.json(path))
-                    issueSourceReady = true
-                    rows.forEach { mergeResearch(rawIssues, it, source) }
-                } catch (error: Exception) {
-                    errors += source + ":" + error.javaClass.simpleName
+                val load = loadNseSource(session, source, path)
+                statuses += load.status
+                if (load.value != null) {
+                    discoveryAvailable = true
+                    extractIssueRecords(load.value).forEach { mergeResearch(rawIssues, it, source) }
                 }
+                load.status.error?.let { errors += source + ":" + it }
             }
 
-            try {
-                val finalRows = extractForthcomingRecords(session.json(NSE_FORTHCOMING))
-                issueSourceReady = true
-                finalRows.forEach { mergeFinalIdentity(rawIssues, it, "NSE_FORTHCOMING_LISTING") }
-            } catch (error: Exception) {
-                errors += "NSE_FORTHCOMING_LISTING:" + error.javaClass.simpleName
+            val forth = loadNseSource(session, "NSE_FORTHCOMING_LISTING", NSE_FORTHCOMING)
+            statuses += forth.status
+            if (forth.value != null) {
+                identityAvailable = true
+                extractForthcomingRecords(forth.value)
+                    .forEach { mergeFinalIdentity(rawIssues, it, "NSE_FORTHCOMING_LISTING") }
             }
+            forth.status.error?.let { errors += "NSE_FORTHCOMING_LISTING:" + it }
 
-            try {
+            val recent = loadNseSource(session, "NSE_RECENT_LISTING", NSE_RECENT)
+            statuses += recent.status
+            if (recent.value != null) {
+                identityAvailable = true
                 val cutoff = today.minusDays(50)
-                val recentRows = extractForthcomingRecords(session.json(NSE_RECENT))
+                extractForthcomingRecords(recent.value)
                     .filter { row ->
                         parseDate(first(row, "listingDate", "dateOfListing", "date_of_listing", "date", "listing_date"))
-                            ?.let { day -> !day.isBefore(cutoff) } == true
+                            ?.let { !it.isBefore(cutoff) } == true
                     }
-                issueSourceReady = true
-                recentRows.forEach { appendIfNew(rawIssues, it, "NSE_RECENT_LISTING") }
-            } catch (error: Exception) {
-                errors += "NSE_RECENT_LISTING:" + error.javaClass.simpleName
+                    .forEach { appendIfNew(rawIssues, it, "NSE_RECENT_LISTING") }
             }
+            recent.status.error?.let { errors += "NSE_RECENT_LISTING:" + it }
         } finally {
             session.close()
         }
 
-        val normalized = rawIssues.map { normalizeCandidate(it.obj, it.source) }
+        saveSourceStatuses(statuses)
 
+        val normalized = rawIssues.map { normalizeCandidate(it.obj, it.source) }
         val officialSymbols = normalized
             .filter { it.source in FINAL_IDENTITY_SOURCES && it.symbol != null && it.listingDate != null }
             .mapNotNull { it.symbol }
             .toSet()
-        val officialIsins = normalized.mapNotNull { it.isin }.toSet()
+        val officialIsins = normalized
+            .filter { it.source in FINAL_IDENTITY_SOURCES }
+            .mapNotNull { it.isin }
+            .toSet()
 
-        val instrumentRows = try {
-            if (officialSymbols.isEmpty()) emptyList() else loadGrowwInstrumentRows(officialSymbols, officialIsins)
-        } catch (error: Exception) {
-            errors += "GROWW_INSTRUMENT_MASTER:" + error.javaClass.simpleName
-            emptyList()
-        }
+        val (instrumentRows, instrumentWarning) =
+            loadGrowwInstrumentRowsWithCache(officialSymbols, officialIsins)
+        instrumentWarning?.let { errors += it }
 
-        val nextTradingDay = if (calendarReady) {
-            nextTradingDay(today, holidays)
-        } else {
-            nextWeekday(today)
-        }
+        val nextTradingDay = if (calendarReady) nextTradingDay(today, holidays) else nextWeekday(today)
         val weekEnd = nextTradingDay.plusDays(6)
 
         val candidates = normalized.map { item ->
-            val finalIdentity = item.source in FINAL_IDENTITY_SOURCES &&
-                item.symbol != null && item.listingDate != null
+            val identityVerified = item.source in FINAL_IDENTITY_SOURCES &&
+                item.symbol != null &&
+                item.listingDate != null
 
-            val resolution = if (finalIdentity) {
+            val resolution = if (identityVerified) {
                 resolveInstrument(instrumentRows, item.symbol, item.isin)
             } else {
                 InstrumentResolution("WAIT_NSE_IDENTITY", null)
             }
 
-            val tradingDayNumber = if (
+            val dayNumber = if (
                 calendarReady && item.listingDate != null && !item.listingDate.isAfter(today)
-            ) {
-                tradingDayNumber(item.listingDate, today, holidays)
-            } else null
+            ) tradingDayNumber(item.listingDate, today, holidays) else null
 
-            val lifecycle: String
-            val resolutionStatus: String
-            when {
-                item.symbol == null -> {
-                    lifecycle = "RESEARCHED_NO_SYMBOL"
-                    resolutionStatus = "RESEARCH_CONTINUES_SYMBOL_PENDING"
-                }
-                item.listingDate == null -> {
-                    lifecycle = "RESEARCHING"
-                    resolutionStatus = "WAIT_OFFICIAL_LISTING_DATE"
-                }
-                !finalIdentity -> {
-                    lifecycle = "LISTING_DATE_CONFIRMED"
-                    resolutionStatus = "WAIT_NSE_IDENTITY_CONFIRMATION"
-                }
-                resolution.status != "RESOLVED" -> {
-                    lifecycle = "GROWW_INSTRUMENT_PENDING"
-                    resolutionStatus = resolution.status
-                }
-                item.listingDate == today -> {
-                    lifecycle = "LISTING_DAY_WATCH"
-                    resolutionStatus = "WAIT_LISTING_SESSION_AND_LIVE_DATA"
-                }
-                item.listingDate.isBefore(today) -> {
-                    if (tradingDayNumber == null) {
-                        lifecycle = "D1_D30_MONITOR"
-                        resolutionStatus = "WAIT_OFFICIAL_TRADING_DAY_COUNT"
-                    } else if (tradingDayNumber <= 30) {
-                        lifecycle = "D1_D30_MONITOR"
-                        resolutionStatus = "POST_LISTING_MONITOR_D$tradingDayNumber"
-                    } else {
-                        lifecycle = "COMPLETE"
-                        resolutionStatus = "D30_WINDOW_COMPLETE"
-                    }
-                }
-                else -> {
-                    lifecycle = "GROWW_INSTRUMENT_RESOLVED"
-                    resolutionStatus = "RESOLVED_PRE_LISTING"
-                }
+            val lifecycle = when {
+                !identityVerified -> "DISCOVERED"
+                resolution.status != "RESOLVED" -> "IDENTITY_VERIFIED"
+                !calendarReady -> "GROWW_SYMBOL_VERIFIED"
+                else -> "READY_FOR_RESEARCH"
+            }
+
+            val resolutionStatus = when {
+                !identityVerified && item.symbol == null -> "WAIT_OFFICIAL_NSE_SYMBOL"
+                !identityVerified -> "WAIT_OFFICIAL_LISTING_IDENTITY"
+                resolution.status != "RESOLVED" -> resolution.status
+                item.listingDate == today -> "WAIT_LIVE_CONFIRMATION_LISTING_DAY"
+                dayNumber != null && dayNumber in 1..30 -> "RESEARCH_D" + dayNumber + "_WAIT_LIVE_CONFIRMATION"
+                item.listingDate?.isAfter(today) == true -> "PRE_LISTING_RESEARCH"
+                else -> "RESEARCH_READY"
             }
 
             val row = resolution.row
@@ -244,21 +248,23 @@ class DirectResearchClient(context: Context) {
                 board = item.board,
                 isSme = item.isSme,
                 issueStatus = item.issueStatus,
-                nseListingConfirmed = finalIdentity,
+                nseListingConfirmed = identityVerified,
                 growwSymbol = row?.get("groww_symbol")?.takeIf { it.isNotBlank() },
                 growwSeries = row?.get("series")?.takeIf { it.isNotBlank() },
                 buyAllowed = allowed(row?.get("buy_allowed")),
                 sellAllowed = allowed(row?.get("sell_allowed")),
-                symbolResolved = finalIdentity && resolution.status == "RESOLVED",
+                symbolResolved = identityVerified && resolution.status == "RESOLVED",
                 growwResolutionStatus = resolution.status,
                 resolutionStatus = resolutionStatus,
                 issuePriceText = item.issuePriceText,
                 subscriptionMultiple = item.subscriptionMultiple,
-                tradingDayNumber = tradingDayNumber,
+                tradingDayNumber = dayNumber,
                 growwLotSize = row?.get("lot_size")?.toDoubleOrNull()?.toInt()
             )
         }.toMutableList()
 
+        // Preserve last known-good candidates when a transient source failure drops
+        // a record from the current refresh. Preserved rows never become execution-ready.
         priorPlan?.allKnownCandidates.orEmpty().forEach { saved ->
             if (candidates.any { it.candidateId == saved.candidateId }) return@forEach
             val listing = saved.listingDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
@@ -270,40 +276,38 @@ class DirectResearchClient(context: Context) {
                 tradingDayNumber(listing, today, holidays)
             } else saved.tradingDayNumber
 
-            val restored = if (dayNo != null && dayNo > 30) {
-                saved.copy(
-                    tradingDayNumber = dayNo,
-                    lifecycleState = "COMPLETE",
-                    resolutionStatus = "D30_WINDOW_COMPLETE"
-                )
-            } else if (dayNo != null && dayNo >= 1) {
-                saved.copy(
-                    tradingDayNumber = dayNo,
-                    lifecycleState = "D1_D30_MONITOR",
-                    resolutionStatus = "POST_LISTING_MONITOR_D$dayNo"
-                )
-            } else saved
-            candidates += restored
+            candidates += saved.copy(
+                tradingDayNumber = dayNo,
+                lifecycleState = if (saved.symbolResolved && calendarReady) "READY_FOR_RESEARCH" else saved.lifecycleState,
+                resolutionStatus = if (dayNo != null && dayNo in 1..30) {
+                    "CACHED_RESEARCH_D" + dayNo + "_WAIT_LIVE_CONFIRMATION"
+                } else {
+                    "CACHED_LAST_KNOWN_GOOD"
+                }
+            )
         }
 
         val unique = candidates.distinctBy { it.candidateId }
         val nextCandidates = unique.filter { it.listingDate == nextTradingDay.toString() }
-        val weekCandidates = unique
-            .filter {
-                val day = it.listingDate?.let { text -> runCatching { LocalDate.parse(text) }.getOrNull() }
-                day != null && !day.isBefore(nextTradingDay) && !day.isAfter(weekEnd)
-            }
-            .sortedWith(compareBy<ResearchCandidate> { it.listingDate ?: "" }.thenBy { it.symbol ?: "" }.thenBy { it.companyName })
+        val weekCandidates = unique.filter {
+            val day = it.listingDate?.let { text -> runCatching { LocalDate.parse(text) }.getOrNull() }
+            day != null && !day.isBefore(nextTradingDay) && !day.isAfter(weekEnd)
+        }.sortedWith(
+            compareBy<ResearchCandidate> { it.listingDate ?: "" }
+                .thenBy { it.symbol ?: "" }
+                .thenBy { it.companyName }
+        )
 
+        val sourceReady = discoveryAvailable && identityAvailable
         val health = when {
-            !issueSourceReady -> "FAILED"
-            errors.isNotEmpty() -> "DEGRADED"
+            statuses.all { it.status == "FAILED" } -> "FAILED"
+            !sourceReady || statuses.any { it.status != "FRESH" } || instrumentWarning != null -> "DEGRADED"
             else -> "OK"
         }
 
         return ResearchPlan(
             generatedAt = now.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            sourceReady = issueSourceReady,
+            sourceReady = sourceReady,
             researchHealth = health,
             calendarReady = calendarReady,
             nextTradingDay = nextTradingDay.toString(),
@@ -319,35 +323,22 @@ class DirectResearchClient(context: Context) {
     }
 
     private fun rankCandidate(candidate: ResearchCandidate, nextTradingDay: String?): ResearchPick {
-        var score = 40.0
+        var score = 35.0
         val reasons = mutableListOf<String>()
-
         if (candidate.nseListingConfirmed) {
-            score += 15.0
+            score += 18.0
             reasons += "OFFICIAL_NSE_IDENTITY"
         }
         if (candidate.symbolResolved) {
-            score += 15.0
-            reasons += "EXACT_GROWW_INSTRUMENT"
+            score += 18.0
+            reasons += "EXACT_GROWW_NSE_CASH_MATCH"
         }
-        val sub = candidate.subscriptionMultiple
-        when {
-            sub == null -> Unit
-            sub >= 10.0 -> {
-                score += 14.0
-                reasons += "VERY_STRONG_SUBSCRIPTION"
-            }
-            sub >= 3.0 -> {
-                score += 9.0
-                reasons += "STRONG_SUBSCRIPTION"
-            }
-            sub >= 1.0 -> {
-                score += 4.0
-                reasons += "FULLY_SUBSCRIBED"
-            }
-            else -> {
-                score -= 6.0
-                reasons += "WEAK_SUBSCRIPTION"
+        candidate.subscriptionMultiple?.let { sub ->
+            when {
+                sub >= 10.0 -> { score += 12.0; reasons += "HIGH_SUBSCRIPTION" }
+                sub >= 3.0 -> { score += 8.0; reasons += "STRONG_SUBSCRIPTION" }
+                sub >= 1.0 -> { score += 4.0; reasons += "FULLY_SUBSCRIBED" }
+                else -> { score -= 5.0; reasons += "WEAK_SUBSCRIPTION" }
             }
         }
         if (candidate.isSme) {
@@ -357,28 +348,21 @@ class DirectResearchClient(context: Context) {
             score += 3.0
             reasons += "MAINBOARD"
         }
-        if (nextTradingDay != null && candidate.listingDate == nextTradingDay) {
+        if (candidate.listingDate == nextTradingDay) {
             score += 8.0
             reasons += "NEXT_LISTING_DAY"
         }
-        when (candidate.tradingDayNumber ?: 0) {
-            in 1..5 -> {
-                score += 5.0
-                reasons += "EARLY_POST_LISTING_WINDOW"
-            }
-            in 6..30 -> {
-                score += 3.0
-                reasons += "ACTIVE_D1_D30_WINDOW"
-            }
+        if ((candidate.tradingDayNumber ?: 0) in 1..30) {
+            score += 4.0
+            reasons += "ACTIVE_D1_D30_WINDOW"
         }
-        score = score.coerceIn(0.0, 100.0)
 
         return ResearchPick(
             symbol = candidate.symbol,
             companyName = candidate.companyName,
             direction = null,
-            researchScore = score,
-            preMarketBias = if (score >= 68.0) "WATCH_LONG" else "WAIT_LIVE_CONFIRMATION",
+            researchScore = score.coerceIn(0.0, 100.0),
+            preMarketBias = "WAIT_LIVE_CONFIRMATION",
             entryPrice = null,
             stopLoss = null,
             target1 = null,
@@ -388,28 +372,101 @@ class DirectResearchClient(context: Context) {
             tradingDayNumber = candidate.tradingDayNumber,
             board = if (candidate.isSme) "SME" else "MAINBOARD",
             reasons = reasons,
-            note = "Research ranking only; no trade direction without live price/volume/order-book confirmation."
+            note = "Research ranking only. No live signal, entry, stop, target or confidence is asserted."
         )
+    }
+
+    private fun loadNseSource(session: NseSession, name: String, path: String): SourceLoad {
+        return try {
+            val value = session.json(path)
+            saveSourcePayload(name, value)
+            SourceLoad(
+                value,
+                ResearchSourceStatus(
+                    name = name,
+                    status = "FRESH",
+                    usingCachedData = false,
+                    lastSuccessAt = Instant.now().toString(),
+                    error = null
+                )
+            )
+        } catch (error: Exception) {
+            val cached = loadSourcePayload(name)
+            if (cached != null) {
+                SourceLoad(
+                    cached.first,
+                    ResearchSourceStatus(
+                        name = name,
+                        status = "CACHED",
+                        usingCachedData = true,
+                        lastSuccessAt = cached.second,
+                        error = safeMessage(error)
+                    )
+                )
+            } else {
+                SourceLoad(
+                    null,
+                    ResearchSourceStatus(
+                        name = name,
+                        status = "FAILED",
+                        usingCachedData = false,
+                        lastSuccessAt = null,
+                        error = safeMessage(error)
+                    )
+                )
+            }
+        }
+    }
+
+    private fun saveSourcePayload(name: String, value: Any) {
+        prefs.edit()
+            .putString(KEY_SOURCE_PAYLOAD_PREFIX + name, jsonText(value))
+            .putLong(KEY_SOURCE_SAVED_PREFIX + name, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun loadSourcePayload(name: String): Pair<Any, String>? {
+        val savedAt = prefs.getLong(KEY_SOURCE_SAVED_PREFIX + name, 0L)
+        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > SOURCE_CACHE_MAX_AGE_MS) return null
+        val text = prefs.getString(KEY_SOURCE_PAYLOAD_PREFIX + name, null) ?: return null
+        val value = parseJsonText(text) ?: return null
+        return value to Instant.ofEpochMilli(savedAt).toString()
+    }
+
+    private fun saveSourceStatuses(statuses: List<ResearchSourceStatus>) {
+        val array = JSONArray()
+        statuses.forEach { source ->
+            array.put(
+                JSONObject()
+                    .put("name", source.name)
+                    .put("status", source.status)
+                    .put("using_cached_data", source.usingCachedData)
+                    .put("last_success_at", source.lastSuccessAt)
+                    .put("error", source.error)
+            )
+        }
+        prefs.edit().putString(KEY_SOURCE_STATUSES, array.toString()).apply()
     }
 
     private fun normalizeCandidate(obj: JSONObject, source: String): NormalizedCandidate {
         val symbol = firstString(obj, "symbol", "trading_symbol", "issue_symbol", "tradingSymbol", "securitySymbol")
             ?.uppercase(Locale.ENGLISH)
         val company = firstString(obj, "companyName", "company", "issuerName", "securityName", "name")
-            ?: symbol
-            ?: "Unknown issuer"
+            ?: symbol ?: "Unknown issuer"
         val listing = parseDate(first(obj, "listingDate", "dateOfListing", "date_of_listing", "listing_date", "tentativeListingDate", "date"))
         val start = parseDate(first(obj, "issueStartDate", "startDate", "openDate", "issueOpenDate"))
         val end = parseDate(first(obj, "issueEndDate", "endDate", "closeDate", "issueCloseDate"))
         val isin = firstString(obj, "isin", "isinCode")?.uppercase(Locale.ENGLISH)
         val board = firstString(obj, "series", "board", "category", "issueType")
         val subscription = firstString(obj, "noOfTime", "subscriptionMultiple", "subscription")
-            ?.replace(",", "")
-            ?.toDoubleOrNull()
+            ?.replace(",", "")?.toDoubleOrNull()
 
         return NormalizedCandidate(
             candidateId = candidateIdentity(obj)
-                ?: "RESEARCH:" + sha256(normalizeCompany(company) + "|" + (start?.toString() ?: "") + "|" + (end?.toString() ?: "") + "|" + (symbol ?: "")).take(20),
+                ?: "RESEARCH:" + sha256(
+                    normalizeCompany(company) + "|" + (start?.toString() ?: "") + "|" +
+                        (end?.toString() ?: "") + "|" + (symbol ?: "")
+                ).take(20),
             source = source,
             symbol = symbol,
             companyName = company,
@@ -433,9 +490,11 @@ class DirectResearchClient(context: Context) {
                 .any { first(obj, it) != null }
             val hasFact = listOf(
                 "symbol", "tradingSymbol", "issue_symbol", "issueStartDate", "issueEndDate",
-                "listingDate", "tentativeListingDate", "dateOfListing", "issuePrice", "issueSize", "status"
+                "listingDate", "tentativeListingDate", "dateOfListing", "issuePrice", "status"
             ).any { first(obj, it) != null }
-            if (hasCompany && hasFact && candidateIdentity(obj) != null) out += JSONObject(obj.toString())
+            if (hasCompany && hasFact && candidateIdentity(obj) != null) {
+                out += JSONObject(obj.toString())
+            }
         }
         return out.distinctBy { candidateIdentity(it) ?: it.toString() }
     }
@@ -450,7 +509,10 @@ class DirectResearchClient(context: Context) {
                 out += JSONObject(obj.toString())
             }
         }
-        return out.distinctBy { firstString(it, "symbol", "tradingSymbol", "securitySymbol")?.uppercase(Locale.ENGLISH) ?: it.toString() }
+        return out.distinctBy {
+            firstString(it, "symbol", "tradingSymbol", "securitySymbol")
+                ?.uppercase(Locale.ENGLISH) ?: it.toString()
+        }
     }
 
     private fun mergeResearch(list: MutableList<RawIssue>, item: JSONObject, source: String) {
@@ -461,37 +523,37 @@ class DirectResearchClient(context: Context) {
     }
 
     private fun mergeFinalIdentity(list: MutableList<RawIssue>, item: JSONObject, source: String) {
-        val finalSymbol = firstString(item, "symbol", "tradingSymbol", "securitySymbol")?.uppercase(Locale.ENGLISH)
+        val finalSymbol = firstString(item, "symbol", "tradingSymbol", "securitySymbol")
+            ?.uppercase(Locale.ENGLISH)
         val finalIsin = firstString(item, "isin", "isinCode")?.uppercase(Locale.ENGLISH)
-        val finalCompany = normalizeCompany(firstString(item, "companyName", "company", "issuerName", "securityName", "name"))
 
         val matches = list.indices.filter { index ->
             val prior = list[index].obj
-            val priorSymbol = firstString(prior, "symbol", "trading_symbol", "issue_symbol", "tradingSymbol", "securitySymbol")?.uppercase(Locale.ENGLISH)
+            val priorSymbol = firstString(prior, "symbol", "trading_symbol", "issue_symbol", "tradingSymbol", "securitySymbol")
+                ?.uppercase(Locale.ENGLISH)
             val priorIsin = firstString(prior, "isin", "isinCode")?.uppercase(Locale.ENGLISH)
-            val priorCompany = normalizeCompany(firstString(prior, "companyName", "company", "issuerName", "securityName", "name"))
             (finalIsin != null && priorIsin != null && finalIsin == priorIsin) ||
-                (finalSymbol != null && priorSymbol != null && finalSymbol == priorSymbol) ||
-                (finalCompany.isNotBlank() && priorCompany.isNotBlank() && finalCompany == priorCompany)
+                (finalSymbol != null && priorSymbol != null && finalSymbol == priorSymbol)
         }
 
         if (matches.size == 1) {
             val index = matches.first()
             list[index] = RawIssue(mergeJson(list[index].obj, item), source)
-        } else appendIfNew(list, item, source)
+        } else {
+            appendIfNew(list, item, source)
+        }
     }
 
     private fun appendIfNew(list: MutableList<RawIssue>, item: JSONObject, source: String) {
-        val symbol = firstString(item, "symbol", "tradingSymbol", "securitySymbol")?.uppercase(Locale.ENGLISH).orEmpty()
+        val symbol = firstString(item, "symbol", "tradingSymbol", "securitySymbol")
+            ?.uppercase(Locale.ENGLISH).orEmpty()
         val isin = firstString(item, "isin", "isinCode")?.uppercase(Locale.ENGLISH).orEmpty()
-        val company = normalizeCompany(firstString(item, "companyName", "company", "issuerName", "securityName", "name"))
+
         val duplicate = list.any { prior ->
-            val pSymbol = firstString(prior.obj, "symbol", "tradingSymbol", "securitySymbol")?.uppercase(Locale.ENGLISH).orEmpty()
+            val pSymbol = firstString(prior.obj, "symbol", "tradingSymbol", "securitySymbol")
+                ?.uppercase(Locale.ENGLISH).orEmpty()
             val pIsin = firstString(prior.obj, "isin", "isinCode")?.uppercase(Locale.ENGLISH).orEmpty()
-            val pCompany = normalizeCompany(firstString(prior.obj, "companyName", "company", "issuerName", "securityName", "name"))
-            (symbol.isNotBlank() && symbol == pSymbol) ||
-                (isin.isNotBlank() && isin == pIsin) ||
-                (company.isNotBlank() && company == pCompany)
+            (symbol.isNotBlank() && symbol == pSymbol) || (isin.isNotBlank() && isin == pIsin)
         }
         if (!duplicate) list += RawIssue(JSONObject(item.toString()), source)
     }
@@ -507,6 +569,25 @@ class DirectResearchClient(context: Context) {
         }
     }
 
+    private fun loadGrowwInstrumentRowsWithCache(
+        symbols: Set<String>,
+        isins: Set<String>
+    ): Pair<List<Map<String, String>>, String?> {
+        if (symbols.isEmpty()) return emptyList<Map<String, String>>() to null
+        return try {
+            val rows = loadGrowwInstrumentRows(symbols, isins)
+            saveInstrumentRows(rows)
+            rows to null
+        } catch (error: Exception) {
+            val cached = loadInstrumentRows(symbols, isins)
+            if (cached.isNotEmpty()) {
+                cached to ("GROWW_INSTRUMENT_MASTER:CACHED:" + safeMessage(error))
+            } else {
+                emptyList<Map<String, String>>() to ("GROWW_INSTRUMENT_MASTER:" + safeMessage(error))
+            }
+        }
+    }
+
     private fun loadGrowwInstrumentRows(symbols: Set<String>, isins: Set<String>): List<Map<String, String>> {
         val connection = (URL(GROWW_INSTRUMENT_CSV).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -514,11 +595,12 @@ class DirectResearchClient(context: Context) {
             readTimeout = 20_000
             instanceFollowRedirects = true
             setRequestProperty("Accept", "text/csv,*/*")
+            setRequestProperty("User-Agent", BROWSER_UA)
         }
         val code = connection.responseCode
         if (code !in 200..299) {
             connection.disconnect()
-            throw IllegalStateException("Groww instrument master returned HTTP $code")
+            throw IllegalStateException("Groww instrument master returned HTTP " + code)
         }
 
         val rows = mutableListOf<Map<String, String>>()
@@ -528,15 +610,48 @@ class DirectResearchClient(context: Context) {
             reader.forEachLine { line ->
                 val values = parseCsvLine(line)
                 if (values.size < headers.size) return@forEachLine
-                val map = headers.indices.associate { index -> headers[index] to values.getOrElse(index) { "" } }
-                if (!map["exchange"].equals("NSE", true) || !map["segment"].equals("CASH", true)) return@forEachLine
-                val symbol = map["trading_symbol"]?.trim()?.uppercase(Locale.ENGLISH).orEmpty()
-                val isin = map["isin"]?.trim()?.uppercase(Locale.ENGLISH).orEmpty()
-                if (symbol in symbols || (isin.isNotBlank() && isin in isins)) rows += map
+                val row = headers.indices.associate { idx -> headers[idx] to values.getOrElse(idx) { "" } }
+                if (!row["exchange"].equals("NSE", true) || !row["segment"].equals("CASH", true)) return@forEachLine
+                val symbol = row["trading_symbol"]?.trim()?.uppercase(Locale.ENGLISH).orEmpty()
+                val isin = row["isin"]?.trim()?.uppercase(Locale.ENGLISH).orEmpty()
+                if (symbol in symbols || (isin.isNotBlank() && isin in isins)) rows += row
             }
         }
         connection.disconnect()
         return rows
+    }
+
+    private fun saveInstrumentRows(rows: List<Map<String, String>>) {
+        val array = JSONArray()
+        rows.forEach { row ->
+            val obj = JSONObject()
+            row.forEach { (key, value) -> obj.put(key, value) }
+            array.put(obj)
+        }
+        prefs.edit()
+            .putString(KEY_INSTRUMENT_ROWS, array.toString())
+            .putLong(KEY_INSTRUMENT_SAVED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun loadInstrumentRows(symbols: Set<String>, isins: Set<String>): List<Map<String, String>> {
+        val savedAt = prefs.getLong(KEY_INSTRUMENT_SAVED_AT, 0L)
+        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > INSTRUMENT_CACHE_MAX_AGE_MS) return emptyList()
+        val array = runCatching { JSONArray(prefs.getString(KEY_INSTRUMENT_ROWS, "[]")) }.getOrElse { return emptyList() }
+        return buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val map = mutableMapOf<String, String>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    map[key] = obj.optString(key)
+                }
+                val symbol = map["trading_symbol"]?.uppercase(Locale.ENGLISH).orEmpty()
+                val isin = map["isin"]?.uppercase(Locale.ENGLISH).orEmpty()
+                if (symbol in symbols || (isin.isNotBlank() && isin in isins)) add(map)
+            }
+        }
     }
 
     private fun resolveInstrument(
@@ -593,8 +708,8 @@ class DirectResearchClient(context: Context) {
 
     private fun candidateIdentity(obj: JSONObject): String? {
         firstString(obj, "issueId", "issue_id", "issueIdentifier", "issueCode", "offerId", "offerDocumentId")
-            ?.let { return "ISSUE:$it" }
-        firstString(obj, "isin", "isinCode")?.uppercase(Locale.ENGLISH)?.let { return "ISIN:$it" }
+            ?.let { return "ISSUE:" + it }
+        firstString(obj, "isin", "isinCode")?.uppercase(Locale.ENGLISH)?.let { return "ISIN:" + it }
 
         val company = normalizeCompany(firstString(obj, "companyName", "company", "issuerName", "securityName", "name"))
         val start = parseDate(first(obj, "issueStartDate", "startDate", "openDate", "issueOpenDate"))
@@ -604,8 +719,7 @@ class DirectResearchClient(context: Context) {
         }
 
         firstString(obj, "symbol", "trading_symbol", "issue_symbol", "tradingSymbol", "securitySymbol")
-            ?.uppercase(Locale.ENGLISH)
-            ?.let { return "SYMBOL:$it" }
+            ?.uppercase(Locale.ENGLISH)?.let { return "SYMBOL:" + it }
         return null
     }
 
@@ -780,7 +894,7 @@ class DirectResearchClient(context: Context) {
                 add(
                     ResearchCandidate(
                         candidateId = obj.optString("candidate_id"),
-                        lifecycleState = obj.optString("lifecycle_state", "RESEARCHING"),
+                        lifecycleState = obj.optString("lifecycle_state", "DISCOVERED"),
                         symbol = obj.optString("symbol").ifBlank { null },
                         companyName = obj.optString("company_name"),
                         listingDate = obj.optString("listing_date").ifBlank { null },
@@ -819,9 +933,25 @@ class DirectResearchClient(context: Context) {
         }
     }
 
+    private fun jsonText(value: Any): String = when (value) {
+        is JSONObject -> value.toString()
+        is JSONArray -> value.toString()
+        else -> value.toString()
+    }
+
+    private fun parseJsonText(text: String): Any? {
+        val trimmed = text.trim()
+        return when {
+            trimmed.startsWith("{") -> runCatching { JSONObject(trimmed) }.getOrNull()
+            trimmed.startsWith("[") -> runCatching { JSONArray(trimmed) }.getOrNull()
+            else -> null
+        }
+    }
+
     private fun safeMessage(error: Throwable): String =
         error.message?.take(200)?.ifBlank { null } ?: error.javaClass.simpleName
 
+    private data class SourceLoad(val value: Any?, val status: ResearchSourceStatus)
     private data class RawIssue(val obj: JSONObject, val source: String)
 
     private data class NormalizedCandidate(
@@ -846,6 +976,12 @@ class DirectResearchClient(context: Context) {
         val row: Map<String, String>?
     )
 
+    private data class HttpResponse(
+        val code: Int,
+        val body: String,
+        val contentType: String
+    )
+
     private class NseSession {
         private val previous = CookieHandler.getDefault()
         private val cookies = CookieManager(null, CookiePolicy.ACCEPT_ALL)
@@ -860,22 +996,39 @@ class DirectResearchClient(context: Context) {
         }
 
         fun json(path: String): Any {
-            prime()
-            var response = get(path)
-            if (response.first in setOf(401, 403)) {
-                primed = false
+            var lastError = "NSE request failed"
+            repeat(3) { attempt ->
                 prime()
-                response = get(path)
+                val response = get(path)
+                if (response.code in 200..299) {
+                    val text = response.body.trim()
+                    val blocked = text.startsWith("<", true) ||
+                        text.contains("captcha", true) ||
+                        text.contains("access denied", true) ||
+                        text.contains("request rejected", true)
+                    val looksJson = text.startsWith("{") || text.startsWith("[")
+                    if (blocked || !looksJson) {
+                        throw IllegalStateException("NSE returned HTML/block content")
+                    }
+                    if (
+                        response.contentType.isNotBlank() &&
+                        !response.contentType.contains("json", true) &&
+                        !looksJson
+                    ) {
+                        throw IllegalStateException("NSE returned unexpected Content-Type")
+                    }
+                    return if (text.startsWith("{")) JSONObject(text) else JSONArray(text)
+                }
+
+                lastError = "NSE returned HTTP " + response.code
+                if (response.code !in setOf(401, 403, 429) || attempt == 2) {
+                    throw IllegalStateException(lastError)
+                }
+
+                primed = false
+                Thread.sleep(500L * (attempt + 1))
             }
-            if (response.first !in 200..299) {
-                throw IllegalStateException("NSE returned HTTP " + response.first)
-            }
-            val text = response.second.trim()
-            return when {
-                text.startsWith("{") -> JSONObject(text)
-                text.startsWith("[") -> JSONArray(text)
-                else -> throw IllegalStateException("NSE returned non-JSON response")
-            }
+            throw IllegalStateException(lastError)
         }
 
         private fun prime() {
@@ -886,20 +1039,22 @@ class DirectResearchClient(context: Context) {
                 readTimeout = 10_000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", BROWSER_UA)
-                setRequestProperty("Accept", "text/html,application/xhtml+xml")
+                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+                setRequestProperty("Connection", "keep-alive")
             }
             val code = connection.responseCode
-            runCatching {
-                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                stream?.close()
-            }
+            val stream = if (code in 200..399) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             connection.disconnect()
-            if (code !in 200..399) throw IllegalStateException("NSE session prime returned HTTP $code")
+            if (code !in 200..399) throw IllegalStateException("NSE session bootstrap returned HTTP " + code)
+            if (body.contains("access denied", true) || body.contains("captcha", true)) {
+                throw IllegalStateException("NSE session bootstrap was blocked")
+            }
             primed = true
         }
 
-        private fun get(path: String): Pair<Int, String> {
+        private fun get(path: String): HttpResponse {
             val connection = (URL(NSE_BASE + path).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 12_000
@@ -909,12 +1064,14 @@ class DirectResearchClient(context: Context) {
                 setRequestProperty("Accept", "application/json, text/plain, */*")
                 setRequestProperty("Accept-Language", "en-US,en;q=0.9")
                 setRequestProperty("Referer", NSE_BASE + "/market-data/all-upcoming-issues-ipo")
+                setRequestProperty("Connection", "keep-alive")
             }
             val code = connection.responseCode
+            val type = connection.contentType.orEmpty()
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             connection.disconnect()
-            return code to body
+            return HttpResponse(code, body, type)
         }
     }
 
@@ -923,7 +1080,14 @@ class DirectResearchClient(context: Context) {
         private const val PREFS_NAME = "ipo_sentinel_direct_research"
         private const val KEY_PLAN_JSON = "research_plan_json"
         private const val KEY_SAVED_AT = "research_plan_saved_at"
-        private const val CACHE_TTL_MS = 15L * 60L * 1000L
+        private const val KEY_SOURCE_STATUSES = "research_source_statuses"
+        private const val KEY_SOURCE_PAYLOAD_PREFIX = "source_payload_"
+        private const val KEY_SOURCE_SAVED_PREFIX = "source_saved_at_"
+        private const val KEY_INSTRUMENT_ROWS = "groww_instrument_rows"
+        private const val KEY_INSTRUMENT_SAVED_AT = "groww_instrument_saved_at"
+        private const val PLAN_CACHE_TTL_MS = 30L * 60L * 1000L
+        private const val SOURCE_CACHE_MAX_AGE_MS = 7L * 24L * 60L * 60L * 1000L
+        private const val INSTRUMENT_CACHE_MAX_AGE_MS = 24L * 60L * 60L * 1000L
 
         private const val NSE_BASE = "https://www.nseindia.com"
         private const val NSE_UPCOMING = "/api/all-upcoming-issues?category=ipo"

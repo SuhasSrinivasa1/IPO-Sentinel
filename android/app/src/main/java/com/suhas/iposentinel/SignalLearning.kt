@@ -25,6 +25,8 @@ class LiveSignalScanner(context: Context) {
 
     suspend fun scan(plan: ResearchPlan): SignalScanSummary {
         val now = java.time.ZonedDateTime.now(IST)
+        reconcileOutstandingCalls(now)
+
         val eligible = plan.allKnownCandidates
             .filter(::exactVerifiedIdentity)
             .filter { candidate ->
@@ -103,6 +105,25 @@ class LiveSignalScanner(context: Context) {
             newCalls = newCalls,
             errors = errors.take(20)
         )
+    }
+
+    private suspend fun reconcileOutstandingCalls(now: java.time.ZonedDateTime) {
+        val shouldCloseToday = !marketOpen(now.toLocalTime())
+        val live = ledger.load().filter { it.state == "LIVE" }
+        for (call in live) {
+            val signalDate = runCatching {
+                Instant.parse(call.recommendedAt).atZone(IST).toLocalDate()
+            }.getOrNull() ?: continue
+            if (!signalDate.isBefore(now.toLocalDate()) && !(shouldCloseToday && signalDate == now.toLocalDate())) {
+                continue
+            }
+            val growwSymbol = call.growwSymbol ?: continue
+            val nseSymbol = call.symbol ?: continue
+            val series = market.fetchSessionCandles(growwSymbol, signalDate)
+            if (series.candles.isNotEmpty()) {
+                ledger.reconcileMarketCandles(nseSymbol, series.candles)
+            }
+        }
     }
 
     private fun exactVerifiedIdentity(candidate: ResearchCandidate): Boolean {

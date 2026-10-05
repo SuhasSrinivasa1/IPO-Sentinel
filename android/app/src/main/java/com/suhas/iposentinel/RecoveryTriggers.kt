@@ -9,12 +9,16 @@ import android.service.notification.StatusBarNotification
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import java.time.Duration
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 class BrokerNotificationListenerService : NotificationListenerService() {
@@ -49,6 +53,7 @@ class RecoveryBootReceiver : BroadcastReceiver() {
             else -> "SYSTEM_RECEIVER"
         }
         RecoveryScheduler.ensureScheduled(context)
+        OffMarketResearchScheduler.ensureScheduled(context)
         RecoveryScheduler.enqueueImmediate(context, trigger)
     }
 }
@@ -99,4 +104,81 @@ object RecoveryScheduler {
     }
 
     private const val UNIQUE_WORK = "ipo_sentinel_broker_truth_recovery"
+}
+
+
+class OffMarketResearchWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        return try {
+            val trigger = inputData.getString(KEY_TRIGGER) ?: "OFF_MARKET_RESEARCH"
+            val research = DirectResearchClient(applicationContext)
+            val (_, plan) = research.refreshPlan(force = true)
+            val replay = StrategyLabEngine(applicationContext).refresh(plan ?: research.cachedPlan())
+            CallLedgerStore(applicationContext).syncStrategySignals(plan ?: research.cachedPlan(), replay)
+            AppAudit.log(
+                applicationContext,
+                "SHADOW_REPLAY_COMPLETE",
+                org.json.JSONObject()
+                    .put("trigger", trigger)
+                    .put("symbols_scanned", replay.symbolsScanned)
+                    .put("candles_stored", replay.candlesStored)
+                    .put("replay_trades", replay.replayTrades)
+                    .put("live_signals", replay.liveSignals.size)
+                    .put("errors", replay.errors.size)
+            )
+            OffMarketResearchScheduler.ensureScheduled(applicationContext)
+            Result.success()
+        } catch (error: Exception) {
+            AppAudit.log(
+                applicationContext,
+                "SHADOW_REPLAY_FAILED",
+                org.json.JSONObject().put("error", error.message ?: error.javaClass.simpleName)
+            )
+            OffMarketResearchScheduler.ensureScheduled(applicationContext)
+            Result.retry()
+        }
+    }
+
+    companion object {
+        const val KEY_TRIGGER = "off_market_trigger"
+    }
+}
+
+object OffMarketResearchScheduler {
+    private val IST = ZoneId.of("Asia/Kolkata")
+
+    fun ensureScheduled(context: Context) {
+        scheduleSlot(context, 8, 35, "PRE_MARKET_RESEARCH")
+        scheduleSlot(context, 18, 45, "POST_MARKET_SHADOW_REPLAY")
+    }
+
+    private fun scheduleSlot(
+        context: Context,
+        hour: Int,
+        minute: Int,
+        trigger: String
+    ) {
+        val now = ZonedDateTime.now(IST)
+        var target = now.toLocalDate().atTime(hour, minute).atZone(IST)
+        if (!target.isAfter(now.plusMinutes(2))) target = target.plusDays(1)
+
+        val delayMillis = Duration.between(now, target).toMillis().coerceAtLeast(0)
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val request = OneTimeWorkRequestBuilder<OffMarketResearchWorker>()
+            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+            .setConstraints(constraints)
+            .setInputData(workDataOf(OffMarketResearchWorker.KEY_TRIGGER to trigger))
+            .build()
+        val uniqueName = "ipo_sentinel_" + trigger.lowercase() + "_" + target.toLocalDate()
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            uniqueName,
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
 }

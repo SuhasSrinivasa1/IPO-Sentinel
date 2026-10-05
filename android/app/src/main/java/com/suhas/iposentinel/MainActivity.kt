@@ -9,7 +9,9 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -20,21 +22,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -54,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -62,15 +69,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
-private val Ink = Color(0xFF0F1318)
-private val Surface = Color(0xFF171D23)
-private val Teal = Color(0xFF21D4B4)
-private val Danger = Color(0xFFFF6B6B)
-private val Muted = Color(0xFF9AA7B3)
-private val Amber = Color(0xFFFFC857)
+private val AppBg = Color(0xFF090C10)
+private val NavBg = Color(0xFF0F1318)
+private val Raised = Color(0xFF121820)
+private val Line = Color(0xFF242B35)
+private val TextPrimary = Color(0xFFF2F5F8)
+private val TextSecondary = Color(0xFF8E9AA7)
+private val Positive = Color(0xFF00C28A)
+private val Negative = Color(0xFFFF5A70)
+private val Warning = Color(0xFFE9B949)
+private val Info = Color(0xFF6EA8FE)
 
-private enum class AppScreen { DASHBOARD, CALLS, RESEARCH, STRATEGIES, SETTINGS }
+private enum class AppScreen { CALLS, RESEARCH, STRATEGIES, SYSTEM }
+private enum class CallsMode { LIVE, CLOSED }
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
@@ -86,6 +100,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         NotificationHelper.createChannels(this)
         RecoveryScheduler.ensureScheduled(this)
+        ResearchLearningScheduler.ensureScheduled(this)
         AppAudit.log(this, "APP_STARTED", JSONObject().put("version", BuildConfig.VERSION_NAME))
 
         if (
@@ -105,56 +120,66 @@ private fun IpoSentinelApp() {
     val context = LocalContext.current
     val repository = remember(context) { AppStateRepository.get(context) }
     val state by repository.state.collectAsState()
-    var screen by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
+    var screen by rememberSaveable { mutableStateOf(AppScreen.CALLS) }
 
     LaunchedEffect(Unit) { repository.initialize() }
 
     LaunchedEffect(Unit) {
         while (true) {
+            delay(5L * 60L * 1000L)
+            repository.refreshSignals()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
             delay(30L * 60L * 1000L)
             repository.refreshResearch(force = true)
-            repository.refreshBrokerTruth(force = false)
         }
     }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Teal,
-            secondary = Teal,
-            background = Ink,
-            surface = Surface,
-            error = Danger
+            primary = Positive,
+            secondary = Info,
+            background = AppBg,
+            surface = Raised,
+            error = Negative,
+            onBackground = TextPrimary,
+            onSurface = TextPrimary
         )
     ) {
         Scaffold(
-            containerColor = Ink,
+            containerColor = AppBg,
             bottomBar = {
-                NavigationBar(containerColor = Surface) {
-                    NavItem(screen, AppScreen.DASHBOARD, "●", "Home") { screen = AppScreen.DASHBOARD }
-                    NavItem(screen, AppScreen.CALLS, "☎", "Calls") { screen = AppScreen.CALLS }
-                    NavItem(screen, AppScreen.RESEARCH, "◆", "Research") { screen = AppScreen.RESEARCH }
-                    NavItem(screen, AppScreen.STRATEGIES, "▲", "Strategy") { screen = AppScreen.STRATEGIES }
-                    NavItem(screen, AppScreen.SETTINGS, "⚙", "Settings") { screen = AppScreen.SETTINGS }
+                NavigationBar(containerColor = NavBg, tonalElevation = 0.dp) {
+                    BottomNavItem(screen, AppScreen.CALLS, "●", "Calls") { screen = AppScreen.CALLS }
+                    BottomNavItem(screen, AppScreen.RESEARCH, "⌕", "Research") { screen = AppScreen.RESEARCH }
+                    BottomNavItem(screen, AppScreen.STRATEGIES, "⌁", "Strategies") { screen = AppScreen.STRATEGIES }
+                    BottomNavItem(screen, AppScreen.SYSTEM, "⚙", "System") { screen = AppScreen.SYSTEM }
                 }
             }
         ) { padding ->
             when (screen) {
-                AppScreen.DASHBOARD -> DashboardScreen(Modifier.padding(padding), state)
                 AppScreen.CALLS -> CallsScreen(
-                    Modifier.padding(padding),
-                    state,
-                    onRefresh = { repository.refreshBrokerTruth(force = true) }
+                    modifier = Modifier.padding(padding),
+                    state = state,
+                    onScan = { repository.refreshSignals() }
                 )
                 AppScreen.RESEARCH -> ResearchScreen(
-                    Modifier.padding(padding),
-                    state,
+                    modifier = Modifier.padding(padding),
+                    state = state,
                     onRefresh = { repository.refreshResearch(force = true) }
                 )
-                AppScreen.STRATEGIES -> StrategiesScreen(Modifier.padding(padding), state)
-                AppScreen.SETTINGS -> SettingsScreen(
-                    Modifier.padding(padding),
-                    state,
-                    repository
+                AppScreen.STRATEGIES -> StrategiesScreen(
+                    modifier = Modifier.padding(padding),
+                    state = state,
+                    onReplay = { repository.runShadowReplay() }
+                )
+                AppScreen.SYSTEM -> SystemScreen(
+                    modifier = Modifier.padding(padding),
+                    state = state,
+                    repository = repository
                 )
             }
         }
@@ -162,186 +187,329 @@ private fun IpoSentinelApp() {
 }
 
 @Composable
-private fun RowScope.NavItem(
+private fun RowScope.BottomNavItem(
     current: AppScreen,
     target: AppScreen,
-    icon: String,
+    glyph: String,
     label: String,
     onClick: () -> Unit
 ) {
     NavigationBarItem(
         selected = current == target,
         onClick = onClick,
-        icon = { Text(icon) },
-        label = { Text(label, fontSize = 10.sp) }
+        icon = {
+            Text(
+                glyph,
+                fontSize = 18.sp,
+                color = if (current == target) Positive else TextSecondary
+            )
+        },
+        label = {
+            Text(
+                label,
+                fontSize = 10.sp,
+                color = if (current == target) TextPrimary else TextSecondary
+            )
+        }
     )
-}
-
-@Composable
-private fun DashboardScreen(modifier: Modifier, state: AppState) {
-    val plan = state.researchPlan
-    val active30 = plan?.allKnownCandidates.orEmpty().count { (it.tradingDayNumber ?: 0) in 1..30 }
-    val cachedSources = state.researchSources.count { it.usingCachedData }
-
-    ScreenColumn(modifier) {
-        Text("IPO Sentinel", fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        Text("Durable calls • broker-truth recovery • NSE + Groww", color = Muted)
-
-        if (state.isRefreshing) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(modifier = Modifier.height(20.dp))
-                Text("  Refreshing shared state…", color = Muted)
-            }
-        }
-
-        StatusCard(
-            "Calls",
-            state.liveCalls.size.toString() + " LIVE • " + state.closedCalls.size + " CLOSED",
-            "Every recommendation is persisted with its first recommendation timestamp and update/close timestamps.",
-            if (state.liveCalls.isNotEmpty()) Teal else Muted
-        )
-
-        StatusCard(
-            "Groww Connection",
-            when {
-                state.growwConnectionReady -> "READY"
-                state.connectionStatus?.growwConfigured == true -> "NEEDS VALIDATION"
-                else -> "NOT CONFIGURED"
-            },
-            "Execution remains locked. Groww is used for authentication and read-only broker reconciliation.",
-            if (state.growwConnectionReady) Teal else Amber
-        )
-
-        StatusCard(
-            "Broker Truth Recovery",
-            when {
-                state.brokerTruth == null -> "NOT SYNCED"
-                state.brokerTruth.error == null -> "SYNCED"
-                else -> "ATTENTION"
-            },
-            buildString {
-                append("Last: ")
-                append(state.brokerTruth?.fetchedAt ?: "—")
-                append("\nTrigger: ")
-                append(state.brokerTruth?.trigger ?: "—")
-                append("\nOrders: ")
-                append(state.brokerTruth?.orders?.size ?: 0)
-                append(" • Positions: ")
-                append(state.brokerTruth?.positions?.size ?: 0)
-                state.brokerTruth?.error?.let { append("\n").append(it) }
-            },
-            if (state.brokerTruth?.error == null && state.brokerTruth != null) Teal else Amber
-        )
-
-        StatusCard(
-            "NSE Research",
-            plan?.researchHealth ?: "NOT SYNCED",
-            "Known " + (plan?.candidateCount ?: 0) +
-                " • Groww resolved " + (plan?.growwResolvedCount ?: 0) +
-                " • Cached sources " + cachedSources,
-            if (plan?.researchHealth == "OK") Teal else Amber
-        )
-
-        StatusCard(
-            "D1–D30 Research Universe",
-            active30.toString(),
-            "Mainboard and SME. A research candidate becomes a live call only after official identity + exact Groww NSE/CASH resolution.",
-            Teal
-        )
-
-        StatusCard(
-            "Live Execution",
-            "LOCKED OFF",
-            "No automatic real-money orders. Recovery observes broker truth but does not place, modify or cancel orders.",
-            Danger
-        )
-
-        state.lastValidatedAtMillis?.let {
-            Text("Last Groww validation: " + Instant.ofEpochMilli(it), color = Muted, fontSize = 12.sp)
-        }
-        state.lastError?.let { Text(it, color = Danger, fontSize = 12.sp) }
-    }
 }
 
 @Composable
 private fun CallsScreen(
     modifier: Modifier,
     state: AppState,
-    onRefresh: suspend () -> Unit
+    onScan: suspend () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    ScreenColumn(modifier) {
-        Text("Calls", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("One durable ledger for live and closed recommendations.", color = Muted)
+    var mode by rememberSaveable { mutableStateOf(CallsMode.LIVE) }
+    val calls = if (mode == CallsMode.LIVE) state.liveCalls else state.closedCalls
 
-        Button(
-            onClick = { scope.launch { onRefresh() } },
-            enabled = !state.isRefreshing,
-            modifier = Modifier.fillMaxWidth()
+    Column(modifier.fillMaxSize()) {
+        ProductHeader(
+            eyebrow = "IPO SENTINEL",
+            title = "Calls",
+            status = when {
+                state.isRefreshing -> "Scanning market…"
+                state.signalScan == null -> "Waiting for first verified scan"
+                state.signalScan.errors.isNotEmpty() -> "Scan degraded"
+                else -> "Last scan " + formatIst(state.signalScan.scannedAt)
+            }
+        )
+
+        CallsSummaryStrip(state)
+
+        TabRow(
+            selectedTabIndex = if (mode == CallsMode.LIVE) 0 else 1,
+            containerColor = AppBg,
+            contentColor = Positive,
+            divider = { HorizontalDivider(color = Line) }
         ) {
-            Text(if (state.isRefreshing) "Reconciling…" else "Reconcile From Groww Now")
-        }
-
-        Text("Live calls (" + state.liveCalls.size + ")", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        if (state.liveCalls.isEmpty()) {
-            Text(
-                "No live calls yet. The app will not manufacture a trade call from stale or incomplete market evidence.",
-                color = Muted
+            Tab(
+                selected = mode == CallsMode.LIVE,
+                onClick = { mode = CallsMode.LIVE },
+                text = {
+                    Text(
+                        "LIVE  " + state.liveCalls.size,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (mode == CallsMode.LIVE) TextPrimary else TextSecondary
+                    )
+                }
             )
-        } else {
-            state.liveCalls.forEach { CallCard(it) }
+            Tab(
+                selected = mode == CallsMode.CLOSED,
+                onClick = { mode = CallsMode.CLOSED },
+                text = {
+                    Text(
+                        "CLOSED  " + state.closedCalls.size,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (mode == CallsMode.CLOSED) TextPrimary else TextSecondary
+                    )
+                }
+            )
         }
 
-        HorizontalDivider()
-        Text("Closed calls (" + state.closedCalls.size + ")", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        if (state.closedCalls.isEmpty()) {
-            Text("No closed calls recorded yet.", color = Muted)
-        } else {
-            state.closedCalls.forEach { CallCard(it) }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (mode == CallsMode.LIVE) {
+                    "Only strategy-triggered calls. Research candidates never appear here."
+                } else {
+                    "Closed by stop, target, session close or verified broker reconciliation."
+                },
+                color = TextSecondary,
+                fontSize = 11.sp,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = { scope.launch { onScan() } },
+                enabled = !state.isRefreshing
+            ) {
+                Text("Scan now")
+            }
         }
 
-        Text(
-            "Recovery rule: call state is stored before process death. Listener reconnect, boot/package restart, app open, periodic work, and manual refresh trigger broker reconciliation. Notifications are wake hints; Groww orders/positions are authoritative.",
-            color = Muted,
-            fontSize = 12.sp
+        if (state.isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+
+        if (calls.isEmpty()) {
+            EmptyCallsState(mode, state)
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(calls, key = { it.callId }) { call ->
+                    CallRow(call)
+                    HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+                }
+                item { Spacer(Modifier.height(18.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallsSummaryStrip(state: AppState) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        MiniMetric("LIVE", state.liveCalls.size.toString(), if (state.liveCalls.isNotEmpty()) Positive else TextSecondary)
+        MiniMetric("CLOSED", state.closedCalls.size.toString(), TextPrimary)
+        MiniMetric(
+            "NSE",
+            state.researchPlan?.researchHealth ?: "—",
+            if (state.researchPlan?.researchHealth == "OK") Positive else Warning
+        )
+        MiniMetric(
+            "VERIFIED",
+            (state.researchPlan?.growwResolvedCount ?: 0).toString(),
+            Info
         )
     }
 }
 
 @Composable
-private fun CallCard(call: RecommendationCall) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(call.symbol ?: call.companyName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text(call.companyName + " • " + call.board, color = Muted, fontSize = 12.sp)
-                }
+private fun RowScope.MiniMetric(label: String, value: String, valueColor: Color) {
+    Column(modifier = Modifier.weight(1f)) {
+        Text(label, color = TextSecondary, fontSize = 9.sp, letterSpacing = 0.8.sp)
+        Text(
+            value,
+            color = valueColor,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun EmptyCallsState(mode: CallsMode, state: AppState) {
+    Box(modifier = Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                if (mode == CallsMode.LIVE) "No verified live calls" else "No closed calls yet",
+                color = TextPrimary,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                if (mode == CallsMode.LIVE) {
+                    "A stock name is not a call. A call appears only after exact NSE ↔ Groww identity plus a composite strategy trigger on real 5-minute candles."
+                } else {
+                    "Completed strategy calls will accumulate here with signal time, close time, exit price and outcome."
+                },
+                color = TextSecondary,
+                fontSize = 13.sp
+            )
+            state.signalScan?.let {
                 Text(
-                    call.state,
-                    color = if (call.state == "LIVE") Teal else Muted,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Text(call.action, color = Amber, fontWeight = FontWeight.SemiBold)
-            Text("Recommended: " + call.recommendedAt, color = Muted, fontSize = 11.sp)
-            Text("Updated: " + call.lastUpdatedAt, color = Muted, fontSize = 11.sp)
-            call.sourceGeneratedAt?.let { Text("Research snapshot: " + it, color = Muted, fontSize = 11.sp) }
-            if (call.brokerOrderId != null || call.brokerPositionQuantity != null) {
-                Text(
-                    "Broker: " + (call.brokerOrderStatus ?: "no order state") +
-                        " • Position " + (call.brokerPositionQuantity ?: 0) +
-                        (call.brokerAveragePrice?.let { " @ ₹" + String.format("%.2f", it) } ?: ""),
-                    color = Teal,
+                    "Verified " + it.verifiedSymbols + " • evaluated " + it.evaluatedSymbols + " • signals " + it.signalsFound,
+                    color = if (it.errors.isEmpty()) Info else Warning,
                     fontSize = 12.sp
                 )
-                call.lastBrokerReconciledAt?.let {
-                    Text("Broker checked: " + it, color = Muted, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallRow(call: RecommendationCall) {
+    var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
+    val resultColor = when {
+        call.returnPct == null -> TextSecondary
+        call.returnPct >= 0.0 -> Positive
+        else -> Negative
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 18.dp, vertical = 15.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        call.symbol ?: "UNRESOLVED",
+                        color = TextPrimary,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    StatusPill(
+                        text = if (call.growwSymbol != null && call.symbol != null) "NSE VERIFIED" else "IDENTITY?",
+                        color = if (call.growwSymbol != null && call.symbol != null) Positive else Warning
+                    )
+                }
+                Text(
+                    call.companyName,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    call.returnPct?.let { signedPct(it) } ?: "LIVE",
+                    color = resultColor,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    if (call.state == "LIVE") formatIst(call.recommendedAt) else formatIst(call.closedAt ?: call.lastUpdatedAt),
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+        }
+
+        Text(
+            call.strategyName ?: "Strategy evidence unavailable",
+            color = Info,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            PriceMetric("ENTRY", call.entryPrice)
+            PriceMetric("STOP", call.stopLoss)
+            PriceMetric("T1", call.target1)
+            PriceMetric("T2", call.target2)
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Signal " + formatIst(call.recommendedAt),
+                color = TextSecondary,
+                fontSize = 11.sp,
+                modifier = Modifier.weight(1f)
+            )
+            call.signalScore?.let {
+                Text("Score " + String.format("%.0f", it), color = TextSecondary, fontSize = 11.sp)
+            }
+        }
+
+        if (expanded) {
+            HorizontalDivider(color = Line)
+            Text("Exact identity", color = TextSecondary, fontSize = 10.sp, letterSpacing = 0.7.sp)
+            Text(
+                "NSE " + (call.symbol ?: "—") + "  •  Groww " + (call.growwSymbol ?: "—") +
+                    (call.isin?.let { "  •  ISIN " + it } ?: ""),
+                color = TextPrimary,
+                fontSize = 12.sp
+            )
+
+            if (call.confirmingStrategyIds.isNotEmpty()) {
+                Text(
+                    "Confirmations: " + call.confirmingStrategyIds.mapNotNull {
+                        CompositeStrategyCatalog.definition(it)?.name
+                    }.joinToString(" • "),
+                    color = Positive,
+                    fontSize = 12.sp
+                )
+            }
+
+            if (call.evidenceSummary.isNotEmpty()) {
+                Text("Why it fired", color = TextSecondary, fontSize = 10.sp, letterSpacing = 0.7.sp)
+                call.evidenceSummary.forEach {
+                    Text("• " + it, color = TextPrimary, fontSize = 12.sp)
                 }
             }
-            call.closedAt?.let { Text("Closed: " + it, color = Muted, fontSize = 11.sp) }
-            call.closeReason?.let { Text("Close reason: " + it.replace("_", " "), color = Muted, fontSize = 11.sp) }
+
+            call.closedAt?.let {
+                Text(
+                    "Closed " + formatIst(it) + " • " + (call.closeReason ?: "closed") +
+                        (call.exitPrice?.let { px -> " • ₹" + String.format("%.2f", px) } ?: ""),
+                    color = resultColor,
+                    fontSize = 12.sp
+                )
+            }
+
+            call.lastBrokerReconciledAt?.let {
+                Text(
+                    "Broker truth checked " + formatIst(it) +
+                        (call.brokerOrderStatus?.let { status -> " • " + status } ?: ""),
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun RowScope.PriceMetric(label: String, value: Double?) {
+    Column {
+        Text(label, color = TextSecondary, fontSize = 9.sp)
+        Text(
+            value?.let { "₹" + String.format("%.2f", it) } ?: "—",
+            color = TextPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
@@ -353,108 +521,326 @@ private fun ResearchScreen(
 ) {
     val scope = rememberCoroutineScope()
     val plan = state.researchPlan
-    val active30 = plan?.allKnownCandidates.orEmpty().filter { (it.tradingDayNumber ?: 0) in 1..30 }
+    val verified = plan?.allKnownCandidates.orEmpty().filter {
+        it.nseListingConfirmed && it.symbolResolved && it.symbol != null &&
+            it.growwSymbol?.uppercase() == "NSE-" + it.symbol.uppercase()
+    }
+    val active = verified.filter { (it.tradingDayNumber ?: 0) in 1..30 }
+    val upcoming = plan?.weekCandidates.orEmpty()
 
-    ScreenColumn(modifier) {
-        Text("Research", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Official discovery → identity → Groww instrument → timestamped call ledger", color = Muted)
-
-        Button(
-            onClick = { scope.launch { onRefresh() } },
-            enabled = !state.isRefreshing,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (state.isRefreshing) "Refreshing…" else "Refresh Direct Research")
+    LazyColumn(modifier = modifier.fillMaxSize()) {
+        item {
+            ProductHeader(
+                eyebrow = "RESEARCH DESK",
+                title = "IPO universe",
+                status = "Discovery is separate from calls • exact symbols only"
+            )
         }
 
-        Text("Research timestamp: " + (plan?.generatedAt ?: "not available"), color = Muted, fontSize = 12.sp)
+        item {
+            ResearchStatusLine(state)
+            HorizontalDivider(color = Line)
+        }
 
-        Text("Source health", fontWeight = FontWeight.Bold)
-        if (state.researchSources.isEmpty()) {
-            Text("No source status recorded yet.", color = Muted)
+        item {
+            SectionHeader(
+                title = "Next listings",
+                count = upcoming.size,
+                action = "Refresh",
+                onAction = { scope.launch { onRefresh() } }
+            )
+        }
+        if (upcoming.isEmpty()) {
+            item { InlineEmpty("No next-listing candidates in the current research snapshot.") }
         } else {
-            state.researchSources.forEach { source ->
-                StatusCard(
-                    source.name,
-                    source.status,
-                    "Last success: " + (source.lastSuccessAt ?: "—") +
-                        (source.error?.let { "\n" + it } ?: ""),
-                    if (source.status == "FRESH") Teal else Amber
+            items(upcoming, key = { "up-" + it.candidateId }) { candidate ->
+                CandidateRow(candidate, plan?.generatedAt)
+                HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+            }
+        }
+
+        item { SectionHeader("D1–D30 verified", active.size) }
+        if (active.isEmpty()) {
+            item { InlineEmpty("No exact NSE/Groww identities currently in the D1–D30 window.") }
+        } else {
+            items(active, key = { "d-" + it.candidateId }) { candidate ->
+                CandidateRow(candidate, plan?.generatedAt)
+                HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+            }
+        }
+
+        item { SectionHeader("Source health", state.researchSources.size) }
+        items(state.researchSources, key = { it.name }) { source ->
+            SourceHealthRow(source)
+            HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+        }
+
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun ResearchStatusLine(state: AppState) {
+    val plan = state.researchPlan
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        StatusPill(
+            text = plan?.researchHealth ?: "NOT READY",
+            color = if (plan?.researchHealth == "OK") Positive else Warning
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "Snapshot " + formatIst(plan?.generatedAt) +
+                " • " + (plan?.candidateCount ?: 0) + " known • " +
+                (plan?.growwResolvedCount ?: 0) + " exact Groww identities",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun CandidateRow(candidate: ResearchCandidate, generatedAt: String?) {
+    val exact = candidate.nseListingConfirmed &&
+        candidate.symbolResolved &&
+        candidate.symbol != null &&
+        candidate.growwSymbol?.uppercase() == "NSE-" + candidate.symbol.uppercase()
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    candidate.symbol ?: candidate.companyName,
+                    color = TextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    candidate.companyName,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
+            StatusPill(
+                text = if (exact) "EXACT" else candidate.lifecycleState.replace("_", " "),
+                color = if (exact) Positive else Warning
+            )
         }
 
-        CandidateSection("Next listing candidates", plan?.nextTradingDayCandidates.orEmpty(), plan?.generatedAt)
-        CandidateSection("D1–D30 active universe", active30, plan?.generatedAt)
-
-        plan?.errors?.forEach { Text("• " + it, color = Amber, fontSize = 12.sp) }
+        Text(
+            listOfNotNull(
+                candidate.listingDate?.let { "Listing " + it },
+                candidate.tradingDayNumber?.let { "D" + it },
+                if (candidate.isSme) "SME" else "MAINBOARD",
+                candidate.subscriptionMultiple?.let { String.format("%.1f× subscribed", it) }
+            ).joinToString("  •  "),
+            color = TextSecondary,
+            fontSize = 11.sp
+        )
 
         Text(
-            "Research cards do not assert live entry, stop, target, confidence or win rate. Calls remain WAIT LIVE CONFIRMATION until real live evidence exists.",
-            color = Muted,
-            fontSize = 12.sp
+            if (exact) {
+                "NSE " + candidate.symbol + "  •  Groww " + candidate.growwSymbol +
+                    (candidate.isin?.let { "  •  " + it } ?: "")
+            } else {
+                candidate.resolutionStatus.replace("_", " ")
+            },
+            color = if (exact) Info else Warning,
+            fontSize = 11.sp
+        )
+
+        candidate.issuePriceText?.let {
+            Text("Issue price " + it, color = TextSecondary, fontSize = 11.sp)
+        }
+
+        Text(
+            "Research snapshot " + formatIst(generatedAt) + " • not a call until a strategy fires",
+            color = TextSecondary,
+            fontSize = 10.sp
         )
     }
 }
 
 @Composable
-private fun CandidateSection(
-    title: String,
-    candidates: List<ResearchCandidate>,
-    generatedAt: String?
+private fun SourceHealthRow(source: ResearchSourceStatus) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(source.name.replace("_", " "), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text("Last success " + formatIst(source.lastSuccessAt), color = TextSecondary, fontSize = 10.sp)
+            source.error?.let { Text(it, color = Warning, fontSize = 10.sp) }
+        }
+        StatusPill(source.status, if (source.status == "FRESH") Positive else Warning)
+    }
+}
+
+@Composable
+private fun StrategiesScreen(
+    modifier: Modifier,
+    state: AppState,
+    onReplay: suspend () -> Unit
 ) {
-    Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-    if (candidates.isEmpty()) {
-        Text("No candidates currently available from the research snapshot.", color = Muted)
-    } else {
-        candidates.forEach { candidate ->
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(candidate.companyName, fontWeight = FontWeight.Bold)
-                    Text(
-                        (candidate.growwSymbol ?: candidate.symbol ?: "symbol pending") + " • " +
-                            (if (candidate.isSme) "SME" else "MAINBOARD") + " • " +
-                            (candidate.listingDate ?: "listing pending"),
-                        color = Muted
-                    )
-                    Text(candidate.lifecycleState, color = Teal, fontWeight = FontWeight.Bold)
-                    Text(candidate.resolutionStatus.replace("_", " "), color = Amber, fontSize = 12.sp)
-                    Text("Research timestamp: " + (generatedAt ?: "—"), color = Muted, fontSize = 11.sp)
+    val scope = rememberCoroutineScope()
+    val families = state.strategySummary.topFive.ifEmpty { state.strategySummary.families.take(5) }
+
+    LazyColumn(modifier = modifier.fillMaxSize()) {
+        item {
+            ProductHeader(
+                eyebrow = "STRATEGY LAB",
+                title = "Five composite playbooks",
+                status = "Ranked by shadow replay • no made-up win rates"
+            )
+        }
+
+        item { ReplaySummaryStrip(state) }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    state.strategySummary.rankingNote,
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { scope.launch { onReplay() } },
+                    enabled = !state.isReplaying
+                ) {
+                    Text(if (state.isReplaying) "Replaying…" else "Run replay")
                 }
             }
         }
+
+        items(families, key = { it.familyId }) { family ->
+            StrategyRow(family)
+            HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+        }
+
+        state.replaySummary?.let { replay ->
+            item { SectionHeader("Missed opportunities", replay.missedMoves.size) }
+            if (replay.missedMoves.isEmpty()) {
+                item { InlineEmpty("No ≥4% missed upside sessions recorded in the last replay.") }
+            } else {
+                items(replay.missedMoves.take(8), key = { it.nseSymbol + it.tradeDate }) { miss ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row {
+                            Text(miss.nseSymbol, color = TextPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(
+                                "+" + String.format("%.1f", miss.maxUpsideBps / 100.0) + "%",
+                                color = Positive,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            miss.tradeDate + " • blocked by " + miss.blockers.joinToString(", "),
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                    HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+                }
+            }
+        }
+
+        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
 @Composable
-private fun StrategiesScreen(modifier: Modifier, state: AppState) {
-    ScreenColumn(modifier) {
-        Text("Strategies", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+private fun ReplaySummaryStrip(state: AppState) {
+    val replay = state.replaySummary
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
+        if (state.isReplaying) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(20.dp), modifier = Modifier.fillMaxWidth()) {
+            ReplayMetric("SESSIONS", replay?.evaluatedSessions?.toString() ?: "—")
+            ReplayMetric("SIGNALS", replay?.emittedSignals?.toString() ?: "—")
+            ReplayMetric("MISSED", replay?.missedMoves?.size?.toString() ?: "—")
+        }
         Text(
-            state.strategySummary.totalStrategyFamilies.toString() + " families • " +
-                state.strategySummary.testedFamilies + " tested • " +
-                state.strategySummary.champions + " champions",
-            color = Muted
+            "Last full replay " + formatIst(replay?.generatedAt),
+            color = TextSecondary,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 8.dp)
         )
-        state.strategySummary.families.forEach { family ->
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(family.name, fontWeight = FontWeight.Bold)
-                    Text(family.phase.replace("_", " ") + " • " + family.status, color = Muted)
-                    Text(family.description, color = Muted, fontSize = 12.sp)
-                    Text(
-                        "Evidence trades: " + family.trades,
-                        color = if (family.trades > 0) Teal else Amber,
-                        fontSize = 12.sp
-                    )
-                }
+    }
+}
+
+@Composable
+private fun RowScope.ReplayMetric(label: String, value: String) {
+    Column(modifier = Modifier.weight(1f)) {
+        Text(label, color = TextSecondary, fontSize = 9.sp)
+        Text(value, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun StrategyRow(family: StrategyFamilyStats) {
+    val statusColor = when (family.status) {
+        "CHAMPION" -> Positive
+        "CHALLENGER" -> Info
+        else -> Warning
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 15.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(family.name, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(family.phase.replace("_", " "), color = TextSecondary, fontSize = 10.sp)
+            }
+            StatusPill(family.status, statusColor)
+        }
+
+        Text(family.description, color = TextSecondary, fontSize = 11.sp)
+
+        if (family.trades == 0) {
+            Text(
+                "No replay evidence yet. This strategy is not classified as working.",
+                color = Warning,
+                fontSize = 11.sp
+            )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                StatText("TRADES", family.trades.toString())
+                StatText("WIN", String.format("%.1f%%", family.winRatePct))
+                StatText("EXP", String.format("%.0f bps", family.expectancyBps))
+                StatText("PF", String.format("%.2f", family.profitFactor))
+                StatText("MAX DD", String.format("%.0f", family.maxDrawdownBps))
             }
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(
+private fun RowScope.StatText(label: String, value: String) {
+    Column(modifier = Modifier.weight(1f)) {
+        Text(label, color = TextSecondary, fontSize = 8.sp)
+        Text(value, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SystemScreen(
     modifier: Modifier,
     state: AppState,
     repository: AppStateRepository
@@ -476,29 +862,48 @@ private fun SettingsScreen(
         if (state.connectionStatus?.staticIpConfirmed == true) whitelist = true
     }
 
-    ScreenColumn(modifier) {
-        Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+    Column(modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        ProductHeader(
+            eyebrow = "SYSTEM",
+            title = "Data & recovery",
+            status = "Connections, source health, broker truth and device resilience"
+        )
 
-        SettingsSection("Recovery & Notifications") {
-            CheckRow("Normal notification permission", NotificationHelper.notificationsAllowed(context))
-            CheckRow("Notification listener access", listenerEnabled)
+        FlatSection("Connectivity") {
+            SystemLine("Groww", if (state.growwConnectionReady) "READY" else "NEEDS ATTENTION", if (state.growwConnectionReady) Positive else Warning)
+            SystemLine("NSE research", state.researchPlan?.researchHealth ?: "NOT READY", if (state.researchPlan?.researchHealth == "OK") Positive else Warning)
+            SystemLine(
+                "Broker truth",
+                if (state.brokerTruth?.error == null && state.brokerTruth != null) "SYNCED" else "NOT SYNCED",
+                if (state.brokerTruth?.error == null && state.brokerTruth != null) Positive else Warning
+            )
+            SystemLine("Auto execution", "LOCKED OFF", Negative)
+        }
+
+        FlatSection("Recovery on Vivo / Funtouch") {
+            SystemLine("Notification access", if (listenerEnabled) "ENABLED" else "OFF", if (listenerEnabled) Positive else Warning)
             Text(
-                "The listener is a wake-up hint only. If Vivo/Funtouch kills it or the process, the durable call ledger survives and the next reconnect/boot/app-open/periodic recovery resumes from Groww order + position truth.",
-                color = Muted,
-                fontSize = 12.sp
+                "The listener is only a wake signal. Calls and replay evidence are durable; listener reconnect, boot, app open, WorkManager and broker truth restore state after process death.",
+                color = TextSecondary,
+                fontSize = 11.sp
             )
             OutlinedButton(
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Open Notification Access") }
+            ) { Text("Open notification access") }
+            OutlinedButton(
+                onClick = { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Open battery optimization") }
             TextButton(
                 onClick = {
                     listenerEnabled = NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
                     RecoveryScheduler.ensureScheduled(context)
-                    RecoveryCoordinator.request(context, "SETTINGS_RECOVERY_CHECK", force = true)
+                    ResearchLearningScheduler.ensureScheduled(context)
+                    RecoveryCoordinator.request(context, "SYSTEM_RECOVERY_CHECK", force = true)
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Refresh Recovery Status") }
+            ) { Text("Refresh recovery status") }
             OutlinedButton(
                 onClick = {
                     NotificationHelper.showOrderEvent(
@@ -508,15 +913,15 @@ private fun SettingsScreen(
                             timestamp = Instant.now().toString(),
                             eventType = "STRATEGY_REVIEW",
                             symbol = "TEST",
-                            message = "Notification test only — no order was placed"
+                            message = "IPO Sentinel test — no order was placed"
                         )
                     )
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Send Test Notification") }
+            ) { Text("Send test notification") }
         }
 
-        SettingsSection("Groww TOTP") {
+        FlatSection("Groww credentials") {
             OutlinedTextField(
                 value = token,
                 onValueChange = { token = it },
@@ -533,18 +938,6 @@ private fun SettingsScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-            Text(
-                if (state.connectionStatus?.growwConfigured == true) {
-                    "Credentials are already encrypted in Android Keystore. Enter new values only to replace them."
-                } else {
-                    "Credentials are encrypted locally with Android Keystore after Save."
-                },
-                color = Muted,
-                fontSize = 12.sp
-            )
-        }
-
-        SettingsSection("Static IP") {
             OutlinedTextField(
                 value = staticIp,
                 onValueChange = { staticIp = it.trim() },
@@ -555,118 +948,172 @@ private fun SettingsScreen(
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = whitelist, onCheckedChange = { whitelist = it })
-                Text("I have whitelisted this IP in Groww")
+                Text("This IP is whitelisted in Groww", color = TextPrimary)
             }
-        }
-
-        Button(
-            onClick = {
-                if (token.isBlank() || secret.isBlank() || staticIp.isBlank()) {
-                    message = "Enter token, TOTP secret and static IP to replace/save Groww settings."
+            Text(
+                if (state.connectionStatus?.growwConfigured == true) {
+                    "Credentials are already encrypted with Android Keystore. Enter values only to replace them."
                 } else {
-                    scope.launch {
-                        val result = repository.saveGrowwSettings(token, secret, staticIp, whitelist)
-                        if (result.ok) {
-                            token = ""
-                            secret = ""
-                            repository.validateGrowwAndStaticIp()
-                            repository.refreshBrokerTruth(force = true)
-                            message = "Groww settings saved, validated and broker recovery refreshed."
-                        } else {
-                            message = result.error ?: "Unable to save Groww settings."
+                    "Credentials will be encrypted locally with Android Keystore."
+                },
+                color = TextSecondary,
+                fontSize = 11.sp
+            )
+            Button(
+                onClick = {
+                    if (token.isBlank() || secret.isBlank() || staticIp.isBlank()) {
+                        message = "Enter token, TOTP secret and static IP before replacing Groww settings."
+                    } else {
+                        scope.launch {
+                            val result = repository.saveGrowwSettings(token, secret, staticIp, whitelist)
+                            if (result.ok) {
+                                token = ""
+                                secret = ""
+                                repository.validateGrowwAndStaticIp()
+                                repository.refreshAll()
+                                message = "Groww settings saved and shared state refreshed."
+                            } else {
+                                message = result.error ?: "Unable to save Groww settings."
+                            }
                         }
                     }
-                }
-            },
-            enabled = !state.isRefreshing,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Save Groww Settings") }
-
-        OutlinedButton(
-            onClick = { scope.launch { repository.validateGrowwAndStaticIp() } },
-            enabled = !state.isRefreshing,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Validate Groww + Static IP") }
+                },
+                enabled = !state.isRefreshing,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Save & validate") }
+        }
 
         state.validation?.let {
-            SettingsSection("Validation") {
-                CheckRow("Groww TOTP authentication", it.growwAuthOk)
-                CheckRow("Static public IP matches", it.staticIpMatches)
-                CheckRow("Whitelist confirmed", it.staticIpConfirmed)
-                CheckRow("Android Keystore", it.secretStoreReady)
-                Text("Live execution: LOCKED OFF", color = Danger, fontWeight = FontWeight.Bold)
+            FlatSection("Validation") {
+                ValidationLine("Groww TOTP authentication", it.growwAuthOk)
+                ValidationLine("Static public IP matches", it.staticIpMatches)
+                ValidationLine("Whitelist confirmed", it.staticIpConfirmed)
+                ValidationLine("Android Keystore", it.secretStoreReady)
             }
         }
 
-        SettingsSection("Weekly Verification Logs") {
+        FlatSection("Audit") {
             Text(
-                "Export now includes the durable live/closed call ledger and broker-recovery status. Credentials and access tokens remain excluded.",
-                color = Muted,
-                fontSize = 12.sp
+                "Weekly export includes calls, signal evidence, strategy replay, source health and broker recovery. Credentials and access tokens are excluded.",
+                color = TextSecondary,
+                fontSize = 11.sp
             )
             Button(
                 onClick = {
                     exportBusy = true
                     scope.launch {
-                        runCatching {
-                            AppAudit.shareExport(context, AppAudit.exportWeekly(context))
-                        }.onFailure { message = "Export failed: " + (it.message ?: "unknown") }
+                        runCatching { AppAudit.shareExport(context, AppAudit.exportWeekly(context)) }
+                            .onFailure { message = "Export failed: " + (it.message ?: "unknown") }
                         exportBusy = false
                     }
                 },
                 enabled = !exportBusy,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text(if (exportBusy) "Preparing…" else "Export Weekly Logs") }
+            ) { Text(if (exportBusy) "Preparing…" else "Export weekly verification") }
         }
 
-        message?.let { Text(it, color = if (it.contains("saved", true)) Teal else Amber) }
-        state.lastError?.let { Text(it, color = Danger) }
+        message?.let {
+            Text(
+                it,
+                color = if (it.contains("saved", ignoreCase = true)) Positive else Warning,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                fontSize = 12.sp
+            )
+        }
+        state.lastError?.let {
+            Text(it, color = Negative, modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 
 @Composable
-private fun ScreenColumn(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
+private fun ProductHeader(eyebrow: String, title: String, status: String) {
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        content = content
+        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(eyebrow, color = Positive, fontSize = 9.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
+        Text(title, color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(status, color = TextSecondary, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    title: String,
+    count: Int,
+    action: String? = null,
+    onAction: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 22.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(count.toString(), color = TextSecondary, fontSize = 12.sp)
+        if (action != null && onAction != null) {
+            TextButton(onClick = onAction) { Text(action) }
+        }
+    }
+}
+
+@Composable
+private fun InlineEmpty(text: String) {
+    Text(
+        text,
+        color = TextSecondary,
+        fontSize = 12.sp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)
     )
 }
 
 @Composable
-private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            content()
-        }
+private fun StatusPill(text: String, color: Color) {
+    Surface(color = color.copy(alpha = 0.12f), shape = MaterialTheme.shapes.small) {
+        Text(
+            text,
+            color = color,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            maxLines = 1
+        )
     }
 }
 
 @Composable
-private fun CheckRow(label: String, passed: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(if (passed) "✓" else "✕", color = if (passed) Teal else Danger, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(8.dp))
-        Text(label, color = Muted)
+private fun FlatSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        content()
+    }
+    HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+}
+
+@Composable
+private fun SystemLine(label: String, value: String, color: Color) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = TextSecondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text(value, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
-private fun StatusCard(
-    title: String,
-    primary: String,
-    secondary: String,
-    primaryColor: Color
-) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, color = Muted, fontSize = 12.sp)
-            Text(primary, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = primaryColor)
-            Text(secondary, color = Muted, fontSize = 12.sp)
-        }
-    }
+private fun ValidationLine(label: String, ok: Boolean) {
+    SystemLine(label, if (ok) "PASS" else "FAIL", if (ok) Positive else Negative)
 }
+
+private fun formatIst(iso: String?): String {
+    if (iso.isNullOrBlank()) return "—"
+    return runCatching {
+        DateTimeFormatter.ofPattern("dd MMM • HH:mm:ss")
+            .format(Instant.parse(iso).atZone(ZoneId.of("Asia/Kolkata")))
+    }.getOrElse { iso.take(19) }
+}
+
+private fun signedPct(value: Double): String =
+    (if (value >= 0.0) "+" else "") + String.format("%.2f%%", value)

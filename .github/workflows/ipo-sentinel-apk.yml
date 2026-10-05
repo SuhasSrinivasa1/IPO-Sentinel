@@ -1,4 +1,4 @@
-name: Build IPO Sentinel v1.4.2
+name: Build IPO Sentinel v1.4.3
 
 on:
   push:
@@ -116,10 +116,11 @@ jobs:
             app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
             app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
             app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
+            app/src/main/java/com/suhas/iposentinel/TradeReview.kt
           )
 
-          grep -n 'versionCode = 142' app/build.gradle.kts
-          grep -n 'versionName = "1.4.2"' app/build.gradle.kts
+          grep -n 'versionCode = 143' app/build.gradle.kts
+          grep -n 'versionName = "1.4.3"' app/build.gradle.kts
           grep -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
           grep -n 'AppScreen.CALLS' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
           grep -n 'CallsMode.LIVE' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
@@ -134,6 +135,11 @@ jobs:
           grep -n 'relative_strength_continuation.*20' app/src/test/java/com/suhas/iposentinel/AdaptiveStrategyEngineTest.kt || grep -n 'assertEquals(20, ShadowExecutionPolicy.holdFor("relative_strength_continuation")' app/src/test/java/com/suhas/iposentinel/AdaptiveStrategyEngineTest.kt
           grep -n 'shadow_pnl_rupees' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
           grep -n 'realised_pnl' app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
+          grep -n '/v1/margins/detail/user' app/src/main/java/com/suhas/iposentinel/TradeReview.kt
+          grep -n '/v1/margins/detail/orders?segment=CASH' app/src/main/java/com/suhas/iposentinel/TradeReview.kt
+          grep -n 'MANUAL BROKER CONFIRMATION' app/src/main/java/com/suhas/iposentinel/MainActivity.kt
+          grep -n 'MIN_BUDGET_RUPEES = 1_000' app/src/main/java/com/suhas/iposentinel/TradeReview.kt
+          grep -n 'MAX_BUDGET_RUPEES = 100_000' app/src/main/java/com/suhas/iposentinel/TradeReview.kt
           grep -n '/v1/historical/candles' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class CandleArchiveStore' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class ShadowReplayEngine' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt
@@ -169,6 +175,11 @@ jobs:
             exit 1
           fi
 
+          if grep -n -E '/v1/order/(create|modify|cancel)' "${ACTIVE_FILES[@]}"; then
+            echo "Direct securities-order submission endpoints are prohibited in this build."
+            exit 1
+          fi
+
           if grep -n -E 'startForeground\(|fetchOrderEvents\(' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt; then
             echo "Signal/replay engine must remain direct and local, not legacy foreground/backend polling."
             exit 1
@@ -191,17 +202,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.4.2-PRO-debug.apk
-          test -s release/IPO-Sentinel-v1.4.2-PRO-debug.apk
-          sha256sum release/IPO-Sentinel-v1.4.2-PRO-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.4.3-ORDER-REVIEW-debug.apk
+          test -s release/IPO-Sentinel-v1.4.3-ORDER-REVIEW-debug.apk
+          sha256sum release/IPO-Sentinel-v1.4.3-ORDER-REVIEW-debug.apk > release/SHA256SUMS.txt
           cat release/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.4.2-PRO
+          name: IPO-Sentinel-v1.4.3-ORDER-REVIEW
           path: |
-            android/release/IPO-Sentinel-v1.4.2-PRO-debug.apk
+            android/release/IPO-Sentinel-v1.4.3-ORDER-REVIEW-debug.apk
             android/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

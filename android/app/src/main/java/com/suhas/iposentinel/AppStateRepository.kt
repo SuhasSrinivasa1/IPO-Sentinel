@@ -24,6 +24,7 @@ data class AppState(
     val signalScan: SignalScanSummary? = null,
     val replaySummary: ReplayRunSummary? = null,
     val strategySummary: StrategySummary = LocalStrategyCatalog.summary(),
+    val tradeReviewSettings: TradeReviewSettings = TradeReviewSettings(),
     val lastValidatedAtMillis: Long? = null,
     val lastError: String? = null
 ) {
@@ -76,6 +77,8 @@ class AppStateRepository private constructor(context: Context) {
     private val strategyStore = StrategyEvidenceStore(appContext)
     private val signalScanner = LiveSignalScanner(appContext)
     private val replayEngine = ShadowReplayEngine(appContext)
+    private val tradeReviewStore = TradeReviewSettingsStore(appContext)
+    private val tradeReviewGateway = TradeReviewGateway(appContext)
     private val mutex = Mutex()
 
     private val _state = MutableStateFlow(
@@ -83,7 +86,8 @@ class AppStateRepository private constructor(context: Context) {
             strategySummary = strategyStore.summary(),
             replaySummary = strategyStore.lastReplay(),
             calls = callLedger.load(),
-            brokerTruth = brokerStore.load()
+            brokerTruth = brokerStore.load(),
+            tradeReviewSettings = tradeReviewStore.load()
         )
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -108,6 +112,7 @@ class AppStateRepository private constructor(context: Context) {
             usingCachedResearch = research.sourceStatuses().any { it.usingCachedData },
             calls = callLedger.load(),
             brokerTruth = brokerStore.load(),
+            tradeReviewSettings = tradeReviewStore.load(),
             replaySummary = strategyStore.lastReplay(),
             strategySummary = strategyStore.summary(),
             lastValidatedAtMillis = groww.lastValidationAtMillis(),
@@ -220,6 +225,36 @@ class AppStateRepository private constructor(context: Context) {
             isRefreshing = false,
             lastError = broker?.error
         )
+    }
+
+    fun saveTradeBudget(value: Int) {
+        val settings = tradeReviewStore.saveBudget(value)
+        _state.value = _state.value.copy(tradeReviewSettings = settings)
+        AppAudit.log(
+            appContext,
+            "TRADE_REVIEW_BUDGET_CHANGED",
+            org.json.JSONObject().put("budget_rupees", settings.budgetRupees)
+        )
+    }
+
+    suspend fun previewOrder(call: RecommendationCall): OrderReviewResult {
+        val result = tradeReviewGateway.review(call)
+        AppAudit.log(
+            appContext,
+            "ORDER_REVIEW_PREFLIGHT",
+            org.json.JSONObject()
+                .put("call_id", call.callId)
+                .put("symbol", result.tradingSymbol)
+                .put("side", result.transactionType)
+                .put("product", result.product)
+                .put("quantity", result.quantity)
+                .put("budget_rupees", result.budgetRupees)
+                .put("required_margin", result.requiredMargin)
+                .put("available_balance", result.availableBalance)
+                .put("ready", result.ready)
+                .put("blockers", org.json.JSONArray(result.blockers))
+        )
+        return result
     }
 
     suspend fun validateGrowwAndStaticIp() = mutex.withLock {

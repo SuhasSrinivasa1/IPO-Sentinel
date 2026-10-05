@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
@@ -37,6 +38,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -54,7 +56,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -163,7 +167,8 @@ private fun IpoSentinelApp() {
                 AppScreen.CALLS -> CallsScreen(
                     modifier = Modifier.padding(padding),
                     state = state,
-                    onScan = { repository.refreshSignals() }
+                    onScan = { repository.refreshSignals() },
+                    onReview = { call -> repository.previewOrder(call) }
                 )
                 AppScreen.RESEARCH -> ResearchScreen(
                     modifier = Modifier.padding(padding),
@@ -217,7 +222,8 @@ private fun RowScope.BottomNavItem(
 private fun CallsScreen(
     modifier: Modifier,
     state: AppState,
-    onScan: suspend () -> Unit
+    onScan: suspend () -> Unit,
+    onReview: suspend (RecommendationCall) -> OrderReviewResult
 ) {
     val scope = rememberCoroutineScope()
     var mode by rememberSaveable { mutableStateOf(CallsMode.LIVE) }
@@ -285,7 +291,7 @@ private fun CallsScreen(
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(calls, key = { it.callId }) { call ->
-                    CallRow(call)
+                    CallRow(call, onReview)
                     HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
                 }
                 item { Spacer(Modifier.height(18.dp)) }
@@ -316,7 +322,7 @@ private fun DailyPnlPanel(state: AppState) {
     Text(
         "Open shadow MTM " + formatRupees(state.todayOpenShadowPnlRupees) +
             "  •  Broker realised " + (state.brokerRealisedPnlRupees?.let(::formatRupees) ?: "—") +
-            "  •  auto execution OFF",
+            "  •  manual broker review",
         color = TextSecondary,
         fontSize = 10.sp,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp)
@@ -453,8 +459,14 @@ private fun EmptyCallsState(mode: CallsMode, state: AppState) {
 }
 
 @Composable
-private fun CallRow(call: RecommendationCall) {
+private fun CallRow(
+    call: RecommendationCall,
+    onReview: suspend (RecommendationCall) -> OrderReviewResult
+) {
+    val scope = rememberCoroutineScope()
     var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
+    var reviewBusy by remember(call.callId) { mutableStateOf(false) }
+    var orderReview by remember(call.callId) { mutableStateOf<OrderReviewResult?>(null) }
     val resultColor = when {
         call.returnPct == null -> TextSecondary
         call.returnPct >= 0.0 -> Positive
@@ -502,12 +514,44 @@ private fun CallRow(call: RecommendationCall) {
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    call.returnPct?.let { signedPct(it) } ?: "LIVE",
-                    color = resultColor,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                if (call.state == "LIVE" && call.signalScore != null) {
+                    Surface(
+                        color = Info.copy(alpha = 0.12f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.clickable(enabled = !reviewBusy) {
+                            scope.launch {
+                                reviewBusy = true
+                                orderReview = onReview(call)
+                                reviewBusy = false
+                            }
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                String.format("%.0f%%", call.signalScore),
+                                color = Info,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                if (reviewBusy) "CHECKING" else "REVIEW ORDER",
+                                color = TextSecondary,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        call.returnPct?.let { signedPct(it) } ?: "LIVE",
+                        color = resultColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
                 Text(
                     if (call.state == "LIVE") formatIst(call.recommendedAt) else formatIst(call.closedAt ?: call.lastUpdatedAt),
                     color = TextSecondary,
@@ -614,6 +658,82 @@ private fun CallRow(call: RecommendationCall) {
             }
         }
     }
+
+    orderReview?.let { review ->
+        OrderReviewDialog(
+            review = review,
+            onDismiss = { orderReview = null }
+        )
+    }
+}
+
+@Composable
+private fun OrderReviewDialog(
+    review: OrderReviewResult,
+    onDismiss: () -> Unit
+) {
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (review.ready) "Broker-ready order" else "Order blocked",
+                color = if (review.ready) Positive else Warning
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SystemLine("Symbol", review.tradingSymbol ?: "—", TextPrimary)
+                SystemLine("Side", review.transactionType ?: "—", TextPrimary)
+                SystemLine("Product", review.product ?: "—", TextPrimary)
+                SystemLine("Quantity", review.quantity.toString(), TextPrimary)
+                SystemLine(
+                    "Reference price",
+                    review.estimatedPrice?.let { "₹" + String.format("%.2f", it) } ?: "—",
+                    TextPrimary
+                )
+                SystemLine(
+                    "Notional",
+                    review.estimatedNotional?.let { "₹" + String.format("%,.2f", it) } ?: "—",
+                    TextPrimary
+                )
+                SystemLine(
+                    "Required margin",
+                    review.requiredMargin?.let { "₹" + String.format("%,.2f", it) } ?: "—",
+                    TextPrimary
+                )
+                SystemLine(
+                    "Available",
+                    review.availableBalance?.let { "₹" + String.format("%,.2f", it) } ?: "—",
+                    TextPrimary
+                )
+                if (review.blockers.isNotEmpty()) {
+                    Text(
+                        review.blockers.joinToString(" • ") { it.replace("_", " ") },
+                        color = Warning,
+                        fontSize = 11.sp
+                    )
+                }
+                Text(
+                    "This screen is a live Groww margin/cash preflight. IPO Sentinel does not submit the securities order.",
+                    color = TextSecondary,
+                    fontSize = 10.sp
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(review.brokerReadyText()))
+                }
+            ) {
+                Text("Copy order")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 @Composable
@@ -997,6 +1117,13 @@ private fun SystemScreen(
         mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName))
     }
     var exportBusy by remember { mutableStateOf(false) }
+    var budgetDraft by rememberSaveable {
+        mutableStateOf(state.tradeReviewSettings.budgetRupees.toFloat())
+    }
+
+    LaunchedEffect(state.tradeReviewSettings.budgetRupees) {
+        budgetDraft = state.tradeReviewSettings.budgetRupees.toFloat()
+    }
 
     LaunchedEffect(state.connectionStatus?.expectedStaticIp, state.connectionStatus?.staticIpConfirmed) {
         state.connectionStatus?.expectedStaticIp?.let { if (staticIp.isBlank()) staticIp = it }
@@ -1024,7 +1151,43 @@ private fun SystemScreen(
                 if (state.brokerTruth?.error == null && state.brokerTruth != null) "SYNCED" else "NOT SYNCED",
                 if (state.brokerTruth?.error == null && state.brokerTruth != null) Positive else Warning
             )
-            SystemLine("Auto execution", "LOCKED OFF", Negative)
+            SystemLine("Live order submission", "LOCKED OFF", Negative)
+        }
+
+        FlatSection("Trade review") {
+            SystemLine("Execution mode", "MANUAL BROKER CONFIRMATION", Info)
+            SystemLine(
+                "Per-order budget",
+                "₹" + String.format("%,.0f", budgetDraft),
+                TextPrimary
+            )
+            Slider(
+                value = budgetDraft,
+                onValueChange = { raw ->
+                    budgetDraft = (kotlin.math.round(raw / 1000f) * 1000f)
+                        .coerceIn(
+                            TradeReviewSettings.MIN_BUDGET_RUPEES.toFloat(),
+                            TradeReviewSettings.MAX_BUDGET_RUPEES.toFloat()
+                        )
+                },
+                onValueChangeFinished = {
+                    repository.saveTradeBudget(budgetDraft.toInt())
+                },
+                valueRange = TradeReviewSettings.MIN_BUDGET_RUPEES.toFloat()..
+                    TradeReviewSettings.MAX_BUDGET_RUPEES.toFloat(),
+                steps = 98
+            )
+            Text(
+                "Live-call confidence opens a broker preflight using this budget. BUY previews use CASH/CNC; SELL previews use CASH/MIS. Groww available balance and required margin are checked before a review can be marked ready.",
+                color = TextSecondary,
+                fontSize = 11.sp
+            )
+            SystemLine("Auto buy / auto sell", "DISABLED", Negative)
+            Text(
+                "The app does not call Groww order-create, modify or cancel endpoints. It produces a broker-ready intent for explicit confirmation instead.",
+                color = TextSecondary,
+                fontSize = 10.sp
+            )
         }
 
         FlatSection("Recovery on Vivo / Funtouch") {

@@ -1,4 +1,4 @@
-# IPO Sentinel Architecture — v1.4.4
+# IPO Sentinel Architecture — v1.4.5
 
 ## Core rule
 
@@ -59,7 +59,7 @@ No future candle is used in a live signal decision.
 
 ## Strategy architecture
 
-The five v1.4.4 strategies are combinations:
+The five v1.4.5 strategies are combinations:
 - Listing Momentum Consensus;
 - VWAP Reclaim + Absorption;
 - Breakout Retest Continuation;
@@ -126,7 +126,7 @@ Stored TOTP credentials are Keystore-encrypted. `DirectGrowwClient` reuses an ac
 
 ## Data not yet promoted into strategy gates
 
-Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.4 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
+Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.5 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
 
 The architecture can add a future `PointInTimeContextProvider` beneath the replay engine once such a source is available.
 
@@ -134,7 +134,7 @@ The architecture can add a future `PointInTimeContextProvider` beneath the repla
 
 `ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false.
 
-v1.4.4 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
+v1.4.5 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
 
 
 
@@ -143,6 +143,12 @@ v1.4.4 generates and evaluates shadow calls. It does not place, modify or cancel
 `TradeReviewGateway.readiness()` reads Groww `/v1/user/detail` and combines it with the latest authenticated/static-IP validation. It fails closed unless API authentication is valid, the configured static public IP matches and is confirmed, NSE is enabled, CASH is active and DDPI is enabled. The readiness snapshot is shown in System and exported in weekly audit data.
 
 The application intentionally keeps `liveExecutionReady=false`; readiness means the broker/account prerequisites are satisfied, not that this APK will submit securities orders.
+
+## Live Review Mode / broker handoff
+
+`TradeReviewSettings` persists `liveReviewMode`. When enabled, a confidence-badge tap invokes the same read-only preflight and, only when `OrderReviewResult.ready` is true, launches the installed Groww package `com.nextbillion.groww`. If Groww is not installed, the app opens the official Play Store listing. The review dialog also exposes the handoff explicitly.
+
+This handoff is deliberately not a broker API order submission: IPO Sentinel never calls Groww create/modify/cancel endpoints, and the final broker confirmation remains in Groww.
 
 ## Trade-review middleware
 

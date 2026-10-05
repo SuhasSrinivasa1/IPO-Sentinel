@@ -51,9 +51,7 @@ object AppAudit {
         val zipFile = File(exportDir, "IPO-Sentinel-Weekly-Audit-$safeTime.zip")
 
         ZipOutputStream(zipFile.outputStream().buffered()).use { zip ->
-            zip.putNextEntry(ZipEntry("app-audit.jsonl"))
-            zip.write(localAudit(context, 7).toByteArray())
-            zip.closeEntry()
+            putText(zip, "app-audit.jsonl", localAudit(context, 7))
 
             val summary = JSONObject()
                 .put("app_version", BuildConfig.VERSION_NAME)
@@ -68,17 +66,22 @@ object AppAudit {
                 .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)
                 .put("live_call_count", snapshot.liveCalls.size)
                 .put("closed_call_count", snapshot.closedCalls.size)
+                .put("last_signal_scan_at", snapshot.signalScan?.scannedAt)
+                .put("last_signal_scan_evaluated", snapshot.signalScan?.evaluatedSymbols ?: 0)
+                .put("last_signal_scan_signals", snapshot.signalScan?.signalsFound ?: 0)
+                .put("last_replay_at", snapshot.replaySummary?.generatedAt)
+                .put("last_replay_sessions", snapshot.replaySummary?.evaluatedSessions ?: 0)
+                .put("last_replay_signals", snapshot.replaySummary?.emittedSignals ?: 0)
+                .put("last_replay_missed_moves", snapshot.replaySummary?.missedMoves?.size ?: 0)
                 .put("broker_truth_fetched_at", snapshot.brokerTruth?.fetchedAt)
                 .put("broker_truth_error", snapshot.brokerTruth?.error)
                 .put("strategy_total", strategy.totalStrategyFamilies)
                 .put("strategy_tested", strategy.testedFamilies)
                 .put("strategy_champions", strategy.champions)
+                .put("strategy_challengers", strategy.challengers)
                 .put("notification_permission", NotificationHelper.notificationsAllowed(context))
-                .put("note", "Groww credentials and access tokens are never included. Live execution is locked off.")
-
-            zip.putNextEntry(ZipEntry("weekly-summary.json"))
-            zip.write(summary.toString(2).toByteArray())
-            zip.closeEntry()
+                .put("note", "Calls are exact-identity strategy signals. Groww credentials/access tokens are excluded. Auto execution is locked off.")
+            putText(zip, "weekly-summary.json", summary.toString(2))
 
             val sources = JSONArray()
             snapshot.researchSources.forEach { source ->
@@ -91,33 +94,103 @@ object AppAudit {
                         .put("error", source.error)
                 )
             }
+            putText(zip, "research-source-health.json", JSONObject().put("sources", sources).toString(2))
+
             val calls = JSONArray()
             snapshot.calls.forEach { call ->
                 calls.put(
                     JSONObject()
                         .put("call_id", call.callId)
                         .put("candidate_id", call.candidateId)
-                        .put("symbol", call.symbol)
+                        .put("nse_symbol", call.symbol)
+                        .put("groww_symbol", call.growwSymbol)
+                        .put("isin", call.isin)
                         .put("company_name", call.companyName)
+                        .put("board", call.board)
                         .put("state", call.state)
-                        .put("action", call.action)
+                        .put("direction", call.direction)
+                        .put("strategy_id", call.strategyId)
+                        .put("strategy_name", call.strategyName)
+                        .put("confirming_strategy_ids", JSONArray(call.confirmingStrategyIds))
                         .put("recommended_at", call.recommendedAt)
                         .put("last_updated_at", call.lastUpdatedAt)
+                        .put("signal_score", call.signalScore)
+                        .put("entry_price", call.entryPrice)
+                        .put("stop_loss", call.stopLoss)
+                        .put("target1", call.target1)
+                        .put("target2", call.target2)
+                        .put("current_price", call.currentPrice)
+                        .put("return_pct", call.returnPct)
+                        .put("evidence_summary", JSONArray(call.evidenceSummary))
+                        .put("candle_pattern", call.candlePattern)
+                        .put("volume_ratio", call.volumeRatio)
+                        .put("vwap", call.vwap)
+                        .put("benchmark_relative_bps", call.benchmarkRelativeBps)
                         .put("closed_at", call.closedAt)
                         .put("close_reason", call.closeReason)
+                        .put("exit_price", call.exitPrice)
                         .put("broker_order_id", call.brokerOrderId)
                         .put("broker_order_status", call.brokerOrderStatus)
                         .put("broker_position_quantity", call.brokerPositionQuantity)
                         .put("last_broker_reconciled_at", call.lastBrokerReconciledAt)
                 )
             }
-            zip.putNextEntry(ZipEntry("calls-ledger.json"))
-            zip.write(JSONObject().put("calls", calls).toString(2).toByteArray())
-            zip.closeEntry()
+            putText(zip, "calls-ledger.json", JSONObject().put("calls", calls).toString(2))
+
+            val families = JSONArray()
+            strategy.families.forEach { family ->
+                families.put(
+                    JSONObject()
+                        .put("strategy_id", family.familyId)
+                        .put("name", family.name)
+                        .put("phase", family.phase)
+                        .put("status", family.status)
+                        .put("trades", family.trades)
+                        .put("win_rate_pct", family.winRatePct)
+                        .put("expectancy_bps", family.expectancyBps)
+                        .put("profit_factor", family.profitFactor)
+                        .put("max_drawdown_bps", family.maxDrawdownBps)
+                        .put("last20_net_bps", family.last20NetBps)
+                        .put("ranking_score", family.rankingScore)
+                )
+            }
+            putText(
+                zip,
+                "strategy-evidence.json",
+                JSONObject()
+                    .put("ranking_note", strategy.rankingNote)
+                    .put("families", families)
+                    .toString(2)
+            )
+
+            val replay = snapshot.replaySummary
+            val missed = JSONArray()
+            replay?.missedMoves.orEmpty().forEach { miss ->
+                missed.put(
+                    JSONObject()
+                        .put("nse_symbol", miss.nseSymbol)
+                        .put("trade_date", miss.tradeDate)
+                        .put("max_upside_bps", miss.maxUpsideBps)
+                        .put("blockers", JSONArray(miss.blockers))
+                )
+            }
+            putText(
+                zip,
+                "shadow-replay-summary.json",
+                JSONObject()
+                    .put("generated_at", replay?.generatedAt)
+                    .put("evaluated_symbols", replay?.evaluatedSymbols ?: 0)
+                    .put("evaluated_sessions", replay?.evaluatedSessions ?: 0)
+                    .put("emitted_signals", replay?.emittedSignals ?: 0)
+                    .put("missed_moves", missed)
+                    .put("errors", JSONArray(replay?.errors.orEmpty()))
+                    .toString(2)
+            )
 
             val broker = snapshot.brokerTruth
-            zip.putNextEntry(ZipEntry("broker-truth-status.json"))
-            zip.write(
+            putText(
+                zip,
+                "broker-truth-status.json",
                 JSONObject()
                     .put("fetched_at", broker?.fetchedAt)
                     .put("trigger", broker?.trigger)
@@ -125,17 +198,17 @@ object AppAudit {
                     .put("position_count", broker?.positions?.size ?: 0)
                     .put("error", broker?.error)
                     .toString(2)
-                    .toByteArray()
             )
-            zip.closeEntry()
-
-            zip.putNextEntry(ZipEntry("research-source-health.json"))
-            zip.write(JSONObject().put("sources", sources).toString(2).toByteArray())
-            zip.closeEntry()
         }
 
         log(context, "WEEKLY_AUDIT_EXPORTED", JSONObject().put("file_name", zipFile.name))
         zipFile
+    }
+
+    private fun putText(zip: ZipOutputStream, name: String, content: String) {
+        zip.putNextEntry(ZipEntry(name))
+        zip.write(content.toByteArray())
+        zip.closeEntry()
     }
 
     fun shareExport(context: Context, file: File) {

@@ -1,144 +1,179 @@
 # IPO Sentinel
 
-IPO Sentinel is an Android-first IPO research and broker-reconciliation application for NSE listings. The production Android path communicates directly with Groww and official NSE sources over HTTPS. The historical Python backend remains in the repository for reference/tests, but active Android screens do not depend on it.
+IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.0 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
 
 ## Current release target
 
-- Version: **1.3.3**
-- Version code: **133**
+- Version: **1.4.0**
+- Version code: **140**
 - Android application ID: `com.suhas.iposentinel.installfix`
-- Artifact: `IPO-Sentinel-v1.3.3-RECOVERY-debug.apk`
+- Artifact: `IPO-Sentinel-v1.4.0-PRO-debug.apk`
 - Compile / target SDK: 35
 - Java: 17
+- Automatic real-money execution: **LOCKED OFF**
 
-## v1.3.3 architecture
+## Product layout
 
-The Android application has one shared application-level source of truth:
+The bottom navigation is deliberately small:
 
-```text
-                 AppStateRepository
-                        |
-     -----------------------------------------
-     |                 |                     |
-DirectGrowwClient DirectResearchClient  CallLedgerStore
-     |                 |                     |
- Groww auth       NSE + instrument data   LIVE / CLOSED
-     |                 |                  timestamps
-     |                 |                     |
-     ----------- BrokerTruthClient ------------
-                        |
-        order list + positions (read only)
-                        |
-               RecoveryCoordinator
-                        |
-  listener reconnect / boot / app open / periodic work
-                        |
-      Home • Calls • Research • Strategy • Settings
-```
+1. **Calls** — default/first tab, with **LIVE** and **CLOSED** sections at the top.
+2. **Research** — upcoming IPOs, D1-D30 verified universe, exact NSE/Groww identity, source health.
+3. **Strategies** — five composite playbooks, shadow-replay evidence, missed-opportunity diagnostics.
+4. **System** — Groww credentials/static IP, NSE/Groww health, recovery, notifications, audit export.
 
-Automatic order placement remains locked off. v1.3.3 adds durable call state and read-only broker reconciliation; it does not silently enable trading.
+The UI uses a dense, flat market-terminal hierarchy rather than card-heavy boxes. Calls emphasize symbol, state, strategy, price levels, timestamp and outcome. Tapping a call expands its identity and evidence.
 
-## Live and closed calls
+## Call contract
 
-The **Calls** screen is the durable recommendation ledger. Each call stores:
-
-- first recommendation timestamp;
-- last-updated timestamp;
-- research-snapshot timestamp;
-- LIVE or CLOSED state;
-- close timestamp and reason when applicable;
-- matching Groww order status/order ID when observed;
-- matching Groww position quantity and average price when observed;
-- last broker-reconciliation timestamp.
-
-A recommendation is created only from a `READY_FOR_RESEARCH` candidate whose official NSE identity is resolved to an exact Groww NSE/CASH instrument. The app still does not fabricate entry, stop, target, confidence, or performance when live evidence is absent.
-
-A degraded/cached NSE refresh does not close a call merely because a source temporarily disappears. Research-source failure and a genuine closed call remain separate states.
-
-## Broker-truth recovery
-
-Notification events are wake-up hints, not the source of truth. Recovery always re-reads Groww's read-only order-list and positions state and reconciles that state with the local durable call ledger.
-
-Recovery can be triggered by:
-
-- notification-listener connection/reconnection;
-- a Groww notification;
-- device boot;
-- application package replacement/update;
-- application open;
-- periodic WorkManager execution while network is available;
-- the manual **Reconcile From Groww Now** action.
-
-This means an unfinished call remains stored if Vivo/Funtouch or Android kills the listener/process. When a supported recovery trigger runs again, the app resumes reconciliation from persisted state plus broker truth.
-
-The app only closes a call from broker reconciliation after it previously observed a non-zero broker position for that call and subsequently observes the position flat. This avoids treating a temporarily missing/failed broker response as a close.
-
-## Groww authentication and secrets
-
-Groww authentication is direct from Android using the Groww TOTP token/API key plus a locally generated TOTP. The token, TOTP secret, and generated access token are encrypted using an Android Keystore-backed AES/GCM key.
-
-The recovery path reuses a recent encrypted access token and refreshes it after broker 401/403 responses, reducing unnecessary TOTP authentication calls.
-
-The app does **not** accept a custom trading-service URL, device ID, device key, backend endpoint, or cleartext HTTP endpoint. Stored secrets are never repopulated into visible Settings fields.
-
-## IPO identity lifecycle
+A `RecommendationCall` may be created only after all of the following:
 
 ```text
-Official NSE discovery
+Official NSE listing identity
         |
-    DISCOVERED
+exact NSE symbol (+ ISIN when available)
         |
-Official listing symbol/date/ISIN
+exact Groww NSE/CASH instrument
         |
- IDENTITY_VERIFIED
+real Groww 5-minute OHLCV candles
         |
-Exact Groww NSE/CASH instrument match
+one or more composite strategies pass
         |
- GROWW_SYMBOL_VERIFIED
-        |
-Official trading calendar + research data
-        |
- READY_FOR_RESEARCH
+timestamped LIVE shadow call
 ```
 
-`READY_FOR_EXECUTION` remains unavailable. Company-name association may help research grouping, but broker identity resolution uses official NSE symbol/ISIN and exact Groww NSE/CASH instrument rows. Identifier disagreement fails closed.
+Legacy `research:` call rows from v1.3.3 are removed during migration. Research refreshes cannot create calls.
 
-## Resilient NSE client
+Each call persists:
+- official NSE symbol, ISIN and exact Groww symbol;
+- signal timestamp and update timestamp;
+- primary strategy plus confirming strategies;
+- signal score and evidence;
+- entry, stop, T1 and T2 derived at signal time;
+- candle pattern, volume ratio, VWAP and NIFTY relative-strength context;
+- current/exit price and return when market evidence is available;
+- close timestamp and reason;
+- broker-reconciliation metadata when present.
 
-`DirectResearchClient` bootstraps an NSE browser-like HTTPS session, retries bounded 401/403/429 failures, rejects HTML/challenge pages, defensively parses changing JSON envelopes, and caches successful NSE responses. Per-source health is published as **FRESH**, **CACHED**, or **FAILED** so source failure is never represented as “no IPOs.”
+## Five composite strategies
 
-The foreground research refresh interval is 30 minutes while the app is active. The uploaded v1.3.2 audit showed current NSE refreshes receiving HTTP 403 and correctly falling back to cached last-known-good data; v1.3.3 preserves that fail-safe behavior while exposing durable calls separately.
+The strategy lab deliberately uses combinations rather than single indicators:
 
-## Notifications and recovery access
+1. **Listing Momentum Consensus** — opening-range breakout + VWAP acceptance + volume acceleration + ATR + listing context.
+2. **VWAP Reclaim + Absorption** — below-VWAP rejection + reclaim + lower-wick absorption + renewed volume.
+3. **Breakout Retest Continuation** — positive trend + VWAP hold + retest/higher-low structure + volume re-expansion.
+4. **Compression → Expansion** — tight range + volume dry-up + breakout + ATR + VWAP.
+5. **Relative Strength Continuation** — NIFTY relative strength + VWAP + higher closes + short-term breakout + volume.
 
-The app requests normal `POST_NOTIFICATIONS` permission for its own alerts. v1.3.3 also provides an optional Android Notification Access setting for the `BrokerNotificationListenerService`.
+These are hypotheses until replay evidence exists. The app does not label a strategy as working simply because it is defined.
 
-The listener does not parse notification content into an order/position truth state. A Groww notification simply wakes the broker reconciler, which then queries Groww directly. If listener access is revoked or the OEM kills the listener, boot/app-open/WorkManager/manual triggers still provide recovery opportunities.
+Runtime classifications are evidence-gated:
+- **CHAMPION**: at least 20 replay trades, expectancy >= 35 bps, profit factor >= 1.25, max drawdown <= 900 bps.
+- **CHALLENGER**: at least 10 replay trades, positive expectancy and profit factor >= 1.05.
+- otherwise **LEARNING**.
+
+## Shadow replay and daily learning
+
+`ShadowReplayEngine` replays exact-identity IPOs bar-by-bar with no future data available to the signal decision. It tests up to the first 30 trading sessions after listing.
+
+Replay records:
+- strategy;
+- signal time;
+- entry/exit;
+- exit reason;
+- net return in bps;
+- maximum favorable excursion;
+- maximum adverse excursion.
+
+If both stop and target occur inside the same 5-minute candle, replay assumes the stop was hit first. This intentionally avoids optimistic intrabar hindsight.
+
+Sessions with no signal but >=4% subsequent upside are recorded as **missed opportunities** with blockers such as weak volume, below VWAP, no opening-range break, weak relative strength or non-rising short-term structure.
+
+The Strategies tab ranks only persisted replay evidence; it never invents win rates.
+
+## Market data and reproducibility
+
+`DirectMarketDataClient` uses the authenticated Groww historical-candles API for 5-minute NSE/CASH data and NIFTY benchmark context.
+
+Every successfully fetched OHLCV session is archived locally as compressed JSON under application-private storage. This provides reproducible evidence for later audits and avoids relying only on a future re-fetch.
+
+While the app is active, the signal scanner runs on a five-minute cadence. WorkManager also schedules a network-constrained market scan every 15 minutes as a process-death fallback.
+
+## Off-market research
+
+WorkManager schedules a daily off-market research/replay cycle targeting approximately **18:45 IST**. It:
+- refreshes the IPO research plan;
+- replays exact verified IPO identities;
+- updates strategy evidence;
+- records missed moves and blockers;
+- leaves automatic execution locked off.
+
+WorkManager timing is best-effort under Android/OEM power management, not an exact wall-clock guarantee.
+
+## Exact NSE identity
+
+The broker identity boundary remains fail-closed:
+
+```text
+DISCOVERED
+  -> IDENTITY_VERIFIED
+  -> GROWW_SYMBOL_VERIFIED
+  -> READY_FOR_RESEARCH
+```
+
+A live scan additionally requires `growwSymbol == "NSE-" + officialNseSymbol`. Fuzzy company-name matching cannot generate a call.
+
+## Source resilience
+
+Official NSE endpoints can return access-denied/challenge responses. `DirectResearchClient` keeps per-source FRESH/CACHED/FAILED state and preserves last-known-good identity data instead of converting a source failure into “no IPOs.”
+
+Once an IPO identity has been exactly resolved, intraday signal generation is driven from Groww candle data rather than pretending cached NSE discovery data is a live price signal.
+
+## Fundamentals and news boundary
+
+v1.4.0 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
+
+Those features require a reliable timestamped source with point-in-time availability. Adding present-day news/fundamentals retrospectively to old candles would contaminate shadow replay with hindsight, so the app fails closed rather than manufacturing that context.
+
+## Process-death recovery
+
+Durable state is not owned by the notification listener or activity.
+
+Recovery paths include:
+- notification-listener reconnect;
+- Groww notification wake hint;
+- boot;
+- package replacement;
+- app open;
+- broker-truth WorkManager;
+- market-signal WorkManager;
+- manual refresh.
+
+The signal scanner also catches up outstanding calls by fetching their original signal-date candle history after a process gap. Broker notifications are wake hints only; read-only Groww orders/positions remain broker truth.
 
 ## Audit
 
-Weekly verification export now includes:
-
+Weekly verification export contains:
 - app audit JSONL;
 - weekly summary;
 - research-source health;
-- durable calls ledger;
-- broker-truth recovery status.
+- full call ledger with signal evidence;
+- strategy evidence;
+- shadow-replay summary/missed moves;
+- broker-truth status.
 
-Groww credentials and access tokens are never exported.
+Credentials and access tokens are excluded.
 
-## Security and execution boundary
+## Security / execution boundary
 
-- `android:usesCleartextTraffic="false"`
-- HTTPS-only active networking
-- Android Keystore-backed credential encryption
-- no credentials/signing keys in the repository
-- direct Groww broker reads only for recovery
-- automatic real-money execution remains **LOCKED OFF**
-- CI gates prevent active Android UI/recovery state from using the historical `BackendApi` polling path
+- HTTPS-only active networking;
+- `android:usesCleartextTraffic="false"`;
+- Android Keystore-backed credential encryption;
+- no custom backend URL/device key in active Android flows;
+- no secrets/signing keys committed;
+- historical `BackendApi.kt` is not used by active Android paths;
+- automatic order placement, modification and cancellation remain **disabled**.
 
-## CI / build
+## CI
 
-`.github/workflows/ipo-sentinel-apk.yml` validates pull requests and main-branch builds with backend tests, architecture/security gates, Android lint, Kotlin compilation, APK assembly, SHA-256 generation, and artifact upload.
+The release workflow verifies the Calls-first architecture, five strategy IDs, direct Groww candle path, exact symbol guard, shadow replay, off-market workers, migration away from research-as-call semantics, recovery components, locked execution, lint, Kotlin compilation and APK assembly.
 
-The expected artifact is `IPO-Sentinel-v1.3.3-RECOVERY-debug.apk`.

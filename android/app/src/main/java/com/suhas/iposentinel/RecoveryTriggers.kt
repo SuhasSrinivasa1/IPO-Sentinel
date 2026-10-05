@@ -21,6 +21,7 @@ class BrokerNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         RecoveryScheduler.ensureScheduled(this)
+        ResearchLearningScheduler.ensureScheduled(this)
         RecoveryCoordinator.request(this, "NOTIFICATION_LISTENER_RECONNECTED", force = true)
         AppAudit.log(this, "NOTIFICATION_LISTENER_CONNECTED")
     }
@@ -49,6 +50,7 @@ class RecoveryBootReceiver : BroadcastReceiver() {
             else -> "SYSTEM_RECEIVER"
         }
         RecoveryScheduler.ensureScheduled(context)
+        ResearchLearningScheduler.ensureScheduled(context)
         RecoveryScheduler.enqueueImmediate(context, trigger)
     }
 }

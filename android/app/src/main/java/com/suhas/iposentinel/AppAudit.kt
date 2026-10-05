@@ -26,7 +26,8 @@ object AppAudit {
                 .put("timestamp", Instant.now().toString())
                 .put("event_type", eventType)
                 .put("payload", payload)
-            file.appendText(record.toString() + "\n")
+            file.appendText(record.toString() + "
+")
         }
     }
 
@@ -65,7 +66,11 @@ object AppAudit {
                 .put("research_health", plan?.researchHealth ?: "UNKNOWN")
                 .put("research_using_cached_data", snapshot.usingCachedResearch)
                 .put("candidate_count", plan?.candidateCount ?: 0)
-                .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)\n                .put("live_call_count", snapshot.liveCalls.size)\n                .put("closed_call_count", snapshot.closedCalls.size)\n                .put("broker_truth_fetched_at", snapshot.brokerTruth?.fetchedAt)\n                .put("broker_truth_error", snapshot.brokerTruth?.error)
+                .put("groww_resolved_count", plan?.growwResolvedCount ?: 0)
+                .put("live_call_count", snapshot.liveCalls.size)
+                .put("closed_call_count", snapshot.closedCalls.size)
+                .put("broker_truth_fetched_at", snapshot.brokerTruth?.fetchedAt)
+                .put("broker_truth_error", snapshot.brokerTruth?.error)
                 .put("strategy_total", strategy.totalStrategyFamilies)
                 .put("strategy_tested", strategy.testedFamilies)
                 .put("strategy_champions", strategy.champions)

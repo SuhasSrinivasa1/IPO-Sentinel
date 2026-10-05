@@ -132,7 +132,10 @@ jobs:
           grep -n 'class CandleArchiveStore' app/src/main/java/com/suhas/iposentinel/DirectMarketDataClient.kt
           grep -n 'class ShadowReplayEngine' app/src/main/java/com/suhas/iposentinel/SignalLearning.kt
           grep -n 'class MarketSignalWorker' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
+          grep -n 'class PreMarketResearchWorker' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
+          grep -n 'delayToMinutes(8, 35)' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
           grep -n 'class OffMarketResearchWorker' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
+          grep -n 'delayToMinutes(18, 45)' app/src/main/java/com/suhas/iposentinel/ResearchLearningScheduler.kt
           grep -n 'listing_momentum_consensus' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt
           grep -n 'vwap_reclaim_absorption' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt
           grep -n 'breakout_retest_continuation' app/src/main/java/com/suhas/iposentinel/AdaptiveStrategyEngine.kt

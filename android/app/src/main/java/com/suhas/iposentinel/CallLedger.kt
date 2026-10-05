@@ -160,7 +160,7 @@ class CallLedgerStore(context: Context) {
             }
             val entry = call.entryPrice ?: return@map call
             val signalAt = runCatching { Instant.parse(call.recommendedAt) }.getOrNull()
-            val afterSignal = candles.filter { signalAt == null || !it.timestamp.isBefore(signalAt) }
+            val afterSignal = candles.filter { signalAt == null || it.timestamp.isAfter(signalAt) }
             if (afterSignal.isEmpty()) return@map call
 
             var current = call.copy(

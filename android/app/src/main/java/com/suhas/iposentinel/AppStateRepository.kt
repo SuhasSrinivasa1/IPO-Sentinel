@@ -241,6 +241,16 @@ class AppStateRepository private constructor(context: Context) {
         )
     }
 
+    fun saveLiveReviewMode(enabled: Boolean) {
+        val settings = tradeReviewStore.saveLiveReviewMode(enabled)
+        _state.value = _state.value.copy(tradeReviewSettings = settings)
+        AppAudit.log(
+            appContext,
+            "LIVE_REVIEW_MODE_CHANGED",
+            org.json.JSONObject().put("enabled", settings.liveReviewMode)
+        )
+    }
+
     suspend fun previewOrder(call: RecommendationCall): OrderReviewResult {
         val result = tradeReviewGateway.review(call)
         AppAudit.log(

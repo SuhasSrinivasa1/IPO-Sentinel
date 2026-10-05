@@ -1,13 +1,13 @@
 # IPO Sentinel
 
-IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.2 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
+IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.3 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
 
 ## Current release target
 
 - Version: **1.4.1**
-- Version code: **142**
+- Version code: **143**
 - Android application ID: `com.suhas.iposentinel.installfix`
-- Artifact: `IPO-Sentinel-v1.4.2-PRO-debug.apk`
+- Artifact: `IPO-Sentinel-v1.4.3-PRO-debug.apk`
 - Compile / target SDK: 35
 - Java: 17
 - Automatic real-money execution: **LOCKED OFF**
@@ -150,7 +150,7 @@ Once an IPO identity has been exactly resolved, intraday signal generation is dr
 
 ## Fundamentals and news boundary
 
-v1.4.2 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
+v1.4.3 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
 
 Those features require a reliable timestamped source with point-in-time availability. Adding present-day news/fundamentals retrospectively to old candles would contaminate shadow replay with hindsight, so the app fails closed rather than manufacturing that context.
 
@@ -197,3 +197,24 @@ Credentials and access tokens are excluded.
 
 The release workflow verifies the Calls-first architecture, five strategy IDs, direct Groww candle path, exact symbol guard, shadow replay, off-market workers, migration away from research-as-call semantics, recovery components, locked execution, lint, Kotlin compilation and APK assembly.
 
+
+
+## Live broker order review
+
+v1.4.3 adds an in-app `TradeReviewGateway` between a strategy call and Groww. It is a read-only pre-trade layer.
+
+From a LIVE call, tapping the confidence percentage:
+- derives the exact NSE trading symbol from the verified call identity;
+- maps BUY to CASH/CNC and SELL to CASH/MIS;
+- sizes quantity from the configured per-order budget;
+- validates that the market reference price is fresh;
+- reads Groww available equity balance;
+- asks Groww's margin API for the exact proposed order requirement;
+- blocks insufficient balance or stale/ambiguous orders;
+- generates an immutable order reference and broker-ready order summary.
+
+Settings includes a per-order budget from ₹1,000 to ₹1,00,000 in ₹1,000 increments.
+
+The app intentionally does **not** call Groww's order-create, modify or cancel endpoints. The CI architecture gate rejects those endpoints if they appear in active Android code. The generated review can be copied for explicit broker confirmation.
+
+This keeps signal generation, order construction and broker submission separate and auditable.

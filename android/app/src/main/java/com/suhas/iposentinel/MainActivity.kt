@@ -236,6 +236,7 @@ private fun CallsScreen(
         )
 
         CallsSummaryStrip(state)
+        DailyPnlPanel(state)
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
@@ -289,6 +290,61 @@ private fun CallsScreen(
                 }
                 item { Spacer(Modifier.height(18.dp)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun DailyPnlPanel(state: AppState) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        PnlTile(
+            label = "SHADOW P&L",
+            value = state.todayShadowPnlRupees,
+            subtitle = "Today • ₹1,00,000 model",
+            modifier = Modifier.weight(1f)
+        )
+        PnlTile(
+            label = "CLOSED P&L",
+            value = state.todayClosedShadowPnlRupees,
+            subtitle = state.todayClosedCalls.size.toString() + " closed today",
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Text(
+        "Open shadow MTM " + formatRupees(state.todayOpenShadowPnlRupees) +
+            "  •  Broker realised " + (state.brokerRealisedPnlRupees?.let(::formatRupees) ?: "—") +
+            "  •  auto execution OFF",
+        color = TextSecondary,
+        fontSize = 10.sp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp)
+    )
+}
+
+@Composable
+private fun PnlTile(
+    label: String,
+    value: Double,
+    subtitle: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = Raised,
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 0.dp
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
+            Text(label, color = TextSecondary, fontSize = 9.sp, letterSpacing = 0.8.sp)
+            Text(
+                formatRupees(value),
+                color = pnlColor(value),
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(subtitle, color = TextSecondary, fontSize = 9.sp, maxLines = 1)
         }
     }
 }
@@ -467,6 +523,24 @@ private fun CallRow(call: RecommendationCall) {
             fontWeight = FontWeight.SemiBold
         )
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                (call.holdPolicy ?: "INTRADAY") +
+                    "  •  shadow qty " + call.shadowQuantity +
+                    "  •  " + formatRupees(call.shadowPnlRupees),
+                color = if (call.shadowPnlRupees >= 0.0) Positive else Negative,
+                fontSize = 11.sp,
+                modifier = Modifier.weight(1f)
+            )
+            if (call.shadowQuantity > 0) {
+                Text(
+                    "₹" + String.format("%.0f", call.shadowEntryValue) + " deployed",
+                    color = TextSecondary,
+                    fontSize = 10.sp
+                )
+            }
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             PriceMetric("ENTRY", call.entryPrice)
             PriceMetric("STOP", call.stopLoss)
@@ -494,6 +568,14 @@ private fun CallRow(call: RecommendationCall) {
                     (call.isin?.let { "  •  ISIN " + it } ?: ""),
                 color = TextPrimary,
                 fontSize = 12.sp
+            )
+            Text(
+                "Shadow execution: " + (call.holdPolicy ?: "INTRADAY") +
+                    " • max " + call.maxHoldTradingSessions + " trading session" +
+                    (if (call.maxHoldTradingSessions == 1) "" else "s") +
+                    " • qty " + call.shadowQuantity,
+                color = TextSecondary,
+                fontSize = 11.sp
             )
 
             if (call.confirmingStrategyIds.isNotEmpty()) {
@@ -930,6 +1012,12 @@ private fun SystemScreen(
 
         FlatSection("Connectivity") {
             SystemLine("Groww", if (state.growwConnectionReady) "READY" else "NEEDS ATTENTION", if (state.growwConnectionReady) Positive else Warning)
+            SystemLine("Groww token", "AUTO REFRESH", if (state.connectionStatus?.growwConfigured == true) Positive else Warning)
+            Text(
+                "TOTP credentials stay encrypted on-device. Access tokens are regenerated automatically after a 30-minute cache window and retried immediately after broker 401/403 responses.",
+                color = TextSecondary,
+                fontSize = 10.sp
+            )
             SystemLine("NSE research", state.researchPlan?.researchHealth ?: "NOT READY", if (state.researchPlan?.researchHealth == "OK") Positive else Warning)
             SystemLine(
                 "Broker truth",
@@ -1172,6 +1260,15 @@ private fun formatIst(iso: String?): String {
         DateTimeFormatter.ofPattern("dd MMM • HH:mm:ss")
             .format(Instant.parse(iso).atZone(ZoneId.of("Asia/Kolkata")))
     }.getOrElse { iso.take(19) }
+}
+
+private fun formatRupees(value: Double): String =
+    (if (value >= 0.0) "+" else "-") + "₹" + String.format("%,.2f", kotlin.math.abs(value))
+
+private fun pnlColor(value: Double): Color = when {
+    value > 0.0 -> Positive
+    value < 0.0 -> Negative
+    else -> TextPrimary
 }
 
 private fun signedPct(value: Double): String =

@@ -1,4 +1,4 @@
-# IPO Sentinel Architecture — v1.4.1
+# IPO Sentinel Architecture — v1.4.2
 
 ## Core rule
 
@@ -32,7 +32,9 @@ broker truth / candle reconciliation
 
 The first/default bottom tab is **Calls**. A compact top segmented control switches between **LIVE** and **CLOSED**.
 
-The call list is intentionally information-dense:
+The call list is intentionally information-dense. Shadow P&L and Closed P&L appear above Live / Closed.
+
+Each call row includes:
 - official NSE symbol plus the exact Groww symbol visible on the collapsed row;
 - verified identity status;
 - signal/close time in IST;
@@ -57,7 +59,7 @@ No future candle is used in a live signal decision.
 
 ## Strategy architecture
 
-The five v1.4.1 strategies are combinations:
+The five v1.4.2 strategies are combinations:
 - Listing Momentum Consensus;
 - VWAP Reclaim + Absorption;
 - Breakout Retest Continuation;
@@ -71,9 +73,15 @@ Evidence statuses:
 - CHALLENGER: >=10 trades + positive expectancy + PF threshold;
 - LEARNING: insufficient evidence.
 
+## Shadow execution policy
+
+The model portfolio uses ₹1,00,000 starting capital, a ₹25,000 per-position cap and ₹1,000 modeled risk budget. Position quantity is determined from both available notional and stop distance.
+
+Strategy-specific hold limits are part of the execution decision: 1, 2, 5, 10 or 20 trading sessions for the five strategy families respectively. Stop/Target 2 can exit earlier. This lets the same signal framework model intraday, short swing and multi-week holds without user intervention.
+
 ## Shadow replay
 
-`ShadowReplayEngine` iterates historical candles sequentially. At each replay bar, the strategy engine sees only candles up to that bar. Exits are simulated only from subsequent candles.
+`ShadowReplayEngine` iterates historical candles sequentially. At each replay bar, the strategy engine sees only candles up to that bar. Exits are simulated only from subsequent candles, including later trading sessions when the selected strategy permits a multi-day hold.
 
 When a stop and target are both contained within the same candle and tick ordering is unavailable, replay chooses STOP. This is intentionally conservative.
 
@@ -104,17 +112,21 @@ The NSE direct client keeps each source independently FRESH, CACHED or FAILED. C
 
 This distinction is critical when NSE challenges the device with 403/HTML responses.
 
+## Groww token lifecycle
+
+Stored TOTP credentials are Keystore-encrypted. `DirectGrowwClient` reuses an access token for no more than 30 minutes and then regenerates it; broker 401/403 responses force immediate re-authentication. Broker-required account approvals remain outside the app's control.
+
 ## Broker truth / OEM recovery
 
 `BrokerNotificationListenerService` is a wake source. It does not parse notification text as authoritative fill state.
 
 `RecoveryCoordinator` re-reads Groww order list and CASH positions and reconciles durable calls. Recovery is scheduled through listener reconnect, boot/package replacement, app open, periodic WorkManager and user refresh.
 
-`LiveSignalScanner` also catches up outstanding signal calls by retrieving the signal-date candle history, so an OEM-killed process can reconstruct stop/target/session-close outcomes after restart.
+`LiveSignalScanner` also catches up outstanding signal calls by retrieving candle history from the signal date through the current date, so an OEM-killed process can reconstruct stop/target/session-close outcomes after restart.
 
 ## Data not yet promoted into strategy gates
 
-Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.1 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
+Broad news sentiment and deep prospectus financial-statement features are intentionally not present in v1.4.2 strategy scores. They require a timestamped, reproducible point-in-time source. Using current articles/fundamentals to explain old candles would introduce look-ahead bias.
 
 The architecture can add a future `PointInTimeContextProvider` beneath the replay engine once such a source is available.
 
@@ -122,5 +134,5 @@ The architecture can add a future `PointInTimeContextProvider` beneath the repla
 
 `ValidationStatus.liveExecutionReady` and `AppState.executionReady` remain false.
 
-v1.4.1 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
+v1.4.2 generates and evaluates shadow calls. It does not place, modify or cancel real-money orders.
 

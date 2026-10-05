@@ -1,4 +1,4 @@
-name: Build IPO Sentinel v1.3.3
+name: Build IPO Sentinel v1.4.0
 
 on:
   push:
@@ -112,10 +112,11 @@ jobs:
             app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
             app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
             app/src/main/java/com/suhas/iposentinel/CallLedger.kt
+            app/src/main/java/com/suhas/iposentinel/StrategyLab.kt
           )
 
-          grep -n 'versionCode = 133' app/build.gradle.kts
-          grep -n 'versionName = "1.3.3"' app/build.gradle.kts
+          grep -n 'versionCode = 140' app/build.gradle.kts
+          grep -n 'versionName = "1.4.0"' app/build.gradle.kts
           grep -n 'android:usesCleartextTraffic="false"' app/src/main/AndroidManifest.xml
           grep -n 'BIND_NOTIFICATION_LISTENER_SERVICE' app/src/main/AndroidManifest.xml
           grep -n 'RECEIVE_BOOT_COMPLETED' app/src/main/AndroidManifest.xml
@@ -125,6 +126,12 @@ jobs:
           grep -n 'class BrokerNotificationListenerService' app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
           grep -n 'class RecoveryBootReceiver' app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
           grep -n 'PeriodicWorkRequestBuilder<BrokerRecoveryWorker>' app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
+          grep -n 'class OffMarketResearchWorker' app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
+          grep -n '18, 45, "POST_MARKET_SHADOW_REPLAY"' app/src/main/java/com/suhas/iposentinel/RecoveryTriggers.kt
+          grep -n 'class StrategyLabEngine' app/src/main/java/com/suhas/iposentinel/StrategyLab.kt
+          grep -n '/v1/historical/candles' app/src/main/java/com/suhas/iposentinel/StrategyLab.kt
+          grep -n 'missedOpportunities' app/src/main/java/com/suhas/iposentinel/StrategyLab.kt
+          grep -n 'syncStrategySignals' app/src/main/java/com/suhas/iposentinel/CallLedger.kt
           grep -n '/v1/order/list' app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
           grep -n '/v1/positions/user' app/src/main/java/com/suhas/iposentinel/BrokerRecovery.kt
           grep -n 'https://api.groww.in' app/src/main/java/com/suhas/iposentinel/DirectGrowwClient.kt
@@ -170,17 +177,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
-          test -s release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
-          sha256sum release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk > release/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk release/IPO-Sentinel-v1.4.0-STRATEGY-LAB-debug.apk
+          test -s release/IPO-Sentinel-v1.4.0-STRATEGY-LAB-debug.apk
+          sha256sum release/IPO-Sentinel-v1.4.0-STRATEGY-LAB-debug.apk > release/SHA256SUMS.txt
           cat release/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPO-Sentinel-v1.3.3-RECOVERY
+          name: IPO-Sentinel-v1.4.0-STRATEGY-LAB
           path: |
-            android/release/IPO-Sentinel-v1.3.3-RECOVERY-debug.apk
+            android/release/IPO-Sentinel-v1.4.0-STRATEGY-LAB-debug.apk
             android/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

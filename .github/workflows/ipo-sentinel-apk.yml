@@ -11,6 +11,9 @@ on:
       - "README.md"
       - ".gitignore"
       - ".github/workflows/ipo-sentinel-apk.yml"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

@@ -38,6 +38,32 @@ class MarketSignalWorker(
     }
 }
 
+class PreMarketResearchWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        val research = DirectResearchClient(applicationContext)
+        val (result, plan) = research.refreshPlan(force = true)
+        if (!result.ok || plan == null) return Result.retry()
+
+        val scan = LiveSignalScanner(applicationContext).scan(plan)
+        AppAudit.log(
+            applicationContext,
+            "PRE_MARKET_RESEARCH",
+            org.json.JSONObject()
+                .put("candidate_count", plan.candidateCount)
+                .put("nse_identity_confirmed", plan.nseIdentityConfirmedCount)
+                .put("groww_resolved", plan.growwResolvedCount)
+                .put("verified_symbols", scan.verifiedSymbols)
+                .put("evaluated_symbols", scan.evaluatedSymbols)
+                .put("signals_found", scan.signalsFound)
+                .put("errors", scan.errors.size)
+        )
+        return if (scan.errors.size >= 10 && scan.evaluatedSymbols == 0) Result.retry() else Result.success()
+    }
+}
+
 class OffMarketResearchWorker(
     appContext: Context,
     params: WorkerParameters
@@ -72,8 +98,18 @@ object ResearchLearningScheduler {
             marketScan
         )
 
+        val preMarket = PeriodicWorkRequestBuilder<PreMarketResearchWorker>(24, TimeUnit.HOURS)
+            .setInitialDelay(delayToMinutes(8, 35), TimeUnit.MINUTES)
+            .setConstraints(network)
+            .build()
+        workManager.enqueueUniquePeriodicWork(
+            PREMARKET_WORK,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            preMarket
+        )
+
         val offMarket = PeriodicWorkRequestBuilder<OffMarketResearchWorker>(24, TimeUnit.HOURS)
-            .setInitialDelay(delayToOffMarketMinutes(), TimeUnit.MINUTES)
+            .setInitialDelay(delayToMinutes(18, 45), TimeUnit.MINUTES)
             .setConstraints(network)
             .build()
         workManager.enqueueUniquePeriodicWork(
@@ -83,14 +119,15 @@ object ResearchLearningScheduler {
         )
     }
 
-    private fun delayToOffMarketMinutes(): Long {
+    private fun delayToMinutes(hour: Int, minute: Int): Long {
         val now = ZonedDateTime.now(IST)
-        var target = now.withHour(18).withMinute(45).withSecond(0).withNano(0)
+        var target = now.withHour(hour).withMinute(minute).withSecond(0).withNano(0)
         if (!target.isAfter(now)) target = target.plusDays(1)
         return Duration.between(now, target).toMinutes().coerceAtLeast(1L)
     }
 
     private val IST = ZoneId.of("Asia/Kolkata")
-    private const val MARKET_WORK = "ipo_sentinel_market_signal_scan_v140"
-    private const val LEARNING_WORK = "ipo_sentinel_offmarket_learning_v140"
+    private const val MARKET_WORK = "ipo_sentinel_market_signal_scan_v141"
+    private const val PREMARKET_WORK = "ipo_sentinel_premarket_research_v141"
+    private const val LEARNING_WORK = "ipo_sentinel_offmarket_learning_v141"
 }

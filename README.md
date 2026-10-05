@@ -1,13 +1,13 @@
 # IPO Sentinel
 
-IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.0 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
+IPO Sentinel is an Android-first IPO signal-research application for NSE listings. v1.4.1 separates **research candidates** from **actual calls**: a company name or READY_FOR_RESEARCH row is not a call. A call requires an exact official NSE identity, an exact Groww NSE/CASH instrument, and a timestamped composite-strategy trigger from real market candles.
 
 ## Current release target
 
-- Version: **1.4.0**
-- Version code: **140**
+- Version: **1.4.1**
+- Version code: **141**
 - Android application ID: `com.suhas.iposentinel.installfix`
-- Artifact: `IPO-Sentinel-v1.4.0-PRO-debug.apk`
+- Artifact: `IPO-Sentinel-v1.4.1-PRO-debug.apk`
 - Compile / target SDK: 35
 - Java: 17
 - Automatic real-money execution: **LOCKED OFF**
@@ -100,7 +100,7 @@ While the app is active, the signal scanner runs on a five-minute cadence. WorkM
 
 ## Off-market research
 
-WorkManager schedules a daily off-market research/replay cycle targeting approximately **18:45 IST**. It:
+WorkManager schedules two daily research anchors: an **08:35 IST pre-market refresh** and an **18:45 IST off-market research/replay cycle**. The pre-market pass refreshes the IPO universe, exact identities and signal readiness. The 18:45 pass:
 - refreshes the IPO research plan;
 - replays exact verified IPO identities;
 - updates strategy evidence;
@@ -130,7 +130,7 @@ Once an IPO identity has been exactly resolved, intraday signal generation is dr
 
 ## Fundamentals and news boundary
 
-v1.4.0 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
+v1.4.1 includes IPO/listing context available in the current direct research path, including board, listing day, issue-price text and subscription multiple when supplied by the source. It does **not** yet use broad news sentiment or full prospectus financial-statement history as a strategy gate.
 
 Those features require a reliable timestamped source with point-in-time availability. Adding present-day news/fundamentals retrospectively to old candles would contaminate shadow replay with hindsight, so the app fails closed rather than manufacturing that context.
 

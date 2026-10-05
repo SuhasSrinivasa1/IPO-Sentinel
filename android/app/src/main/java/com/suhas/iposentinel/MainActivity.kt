@@ -237,34 +237,22 @@ private fun CallsScreen(
 
         CallsSummaryStrip(state)
 
-        TabRow(
-            selectedTabIndex = if (mode == CallsMode.LIVE) 0 else 1,
-            containerColor = AppBg,
-            contentColor = Positive,
-            divider = { HorizontalDivider(color = Line) }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Tab(
+            CallsModeSegment(
+                label = "LIVE",
+                count = state.liveCalls.size,
                 selected = mode == CallsMode.LIVE,
-                onClick = { mode = CallsMode.LIVE },
-                text = {
-                    Text(
-                        "LIVE  " + state.liveCalls.size,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (mode == CallsMode.LIVE) TextPrimary else TextSecondary
-                    )
-                }
-            )
-            Tab(
+                modifier = Modifier.weight(1f)
+            ) { mode = CallsMode.LIVE }
+            CallsModeSegment(
+                label = "CLOSED",
+                count = state.closedCalls.size,
                 selected = mode == CallsMode.CLOSED,
-                onClick = { mode = CallsMode.CLOSED },
-                text = {
-                    Text(
-                        "CLOSED  " + state.closedCalls.size,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (mode == CallsMode.CLOSED) TextPrimary else TextSecondary
-                    )
-                }
-            )
+                modifier = Modifier.weight(1f)
+            ) { mode = CallsMode.CLOSED }
         }
 
         Row(
@@ -301,6 +289,43 @@ private fun CallsScreen(
                 }
                 item { Spacer(Modifier.height(18.dp)) }
             }
+        }
+    }
+}
+
+@Composable
+private fun CallsModeSegment(
+    label: String,
+    count: Int,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        color = if (selected) Raised else AppBg,
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(vertical = 11.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                color = if (selected) TextPrimary else TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.7.sp
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                count.toString(),
+                color = if (selected) Positive else TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -409,6 +434,16 @@ private fun CallRow(call: RecommendationCall) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (call.symbol != null && call.growwSymbol != null) {
+                    Text(
+                        "NSE " + call.symbol + "  ↔  Groww " + call.growwSymbol +
+                            (call.isin?.let { "  •  " + it } ?: ""),
+                        color = Info,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
@@ -526,6 +561,13 @@ private fun ResearchScreen(
     }
     val active = verified.filter { (it.tradingDayNumber ?: 0) in 1..30 }
     val upcoming = plan?.weekCandidates.orEmpty()
+    val pendingIdentity = plan?.allKnownCandidates.orEmpty()
+        .filterNot { candidate ->
+            candidate.nseListingConfirmed && candidate.symbolResolved && candidate.symbol != null &&
+                candidate.growwSymbol?.uppercase() == "NSE-" + candidate.symbol.uppercase()
+        }
+        .distinctBy { it.candidateId }
+        .sortedWith(compareBy<ResearchCandidate> { it.listingDate ?: "9999-99-99" }.thenBy { it.companyName })
 
     LazyColumn(modifier = modifier.fillMaxSize()) {
         item {
@@ -563,6 +605,16 @@ private fun ResearchScreen(
             item { InlineEmpty("No exact NSE/Groww identities currently in the D1–D30 window.") }
         } else {
             items(active, key = { "d-" + it.candidateId }) { candidate ->
+                CandidateRow(candidate, plan?.generatedAt)
+                HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
+            }
+        }
+
+        item { SectionHeader("Identity pending", pendingIdentity.size) }
+        if (pendingIdentity.isEmpty()) {
+            item { InlineEmpty("No unresolved IPO identities in the current research universe.") }
+        } else {
+            items(pendingIdentity.take(40), key = { "pending-" + it.candidateId }) { candidate ->
                 CandidateRow(candidate, plan?.generatedAt)
                 HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 18.dp))
             }
@@ -811,6 +863,14 @@ private fun StrategyRow(family: StrategyFamilyStats) {
         }
 
         Text(family.description, color = TextSecondary, fontSize = 11.sp)
+
+        CompositeStrategyCatalog.definition(family.familyId)?.let { definition ->
+            Text(
+                definition.ingredients.joinToString("  •  "),
+                color = Info,
+                fontSize = 10.sp
+            )
+        }
 
         if (family.trades == 0) {
             Text(

@@ -21,6 +21,22 @@ data class TradeReviewSettings(
     }
 }
 
+data class GrowwTradingReadiness(
+    val generatedAt: String,
+    val growwAuthOk: Boolean,
+    val staticIpMatches: Boolean,
+    val staticIpConfirmed: Boolean,
+    val nseEnabled: Boolean,
+    val cashSegmentEnabled: Boolean,
+    val ddpiEnabled: Boolean,
+    val blockers: List<String>,
+    val brokerMessage: String? = null
+) {
+    val brokerReady: Boolean
+        get() = blockers.isEmpty()
+}
+
+
 class TradeReviewSettingsStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -108,6 +124,67 @@ data class OrderReviewResult(
 class TradeReviewGateway(context: Context) {
     private val appContext = context.applicationContext
     private val settings = TradeReviewSettingsStore(appContext)
+
+    suspend fun readiness(): GrowwTradingReadiness = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val groww = DirectGrowwClient(appContext)
+        val validation = groww.lastValidation()
+        val blockers = mutableListOf<String>()
+
+        val authOk = validation?.growwAuthOk == true
+        val staticMatches = validation?.staticIpMatches == true
+        val staticConfirmed = validation?.staticIpConfirmed == true
+
+        if (!authOk) blockers += "GROWW_AUTH_NOT_VALIDATED"
+        if (!staticMatches) blockers += "STATIC_IP_MISMATCH"
+        if (!staticConfirmed) blockers += "STATIC_IP_NOT_CONFIRMED"
+
+        val (auth, token) = groww.accessToken()
+        if (!auth.ok || token.isNullOrBlank()) {
+            blockers += "GROWW_AUTH_FAILED"
+            return@withContext GrowwTradingReadiness(
+                generatedAt = now,
+                growwAuthOk = false,
+                staticIpMatches = staticMatches,
+                staticIpConfirmed = staticConfirmed,
+                nseEnabled = false,
+                cashSegmentEnabled = false,
+                ddpiEnabled = false,
+                blockers = blockers.distinct(),
+                brokerMessage = auth.error
+            )
+        }
+
+        val profileResult = runCatching { getJson("/v1/user/detail", token) }
+        val profile = profileResult.getOrNull()
+        val payload = profile?.optJSONObject("payload") ?: profile
+        val nseEnabled = payload?.optBoolean("nse_enabled", false) == true
+        val ddpiEnabled = payload?.optBoolean("ddpi_enabled", false) == true
+        val segments = payload?.optJSONArray("active_segments") ?: JSONArray()
+        val activeSegments = buildSet {
+            for (i in 0 until segments.length()) {
+                add(segments.optString(i).trim().uppercase())
+            }
+        }
+        val cashEnabled = "CASH" in activeSegments
+
+        if (profile == null) blockers += "USER_PROFILE_UNAVAILABLE"
+        if (!nseEnabled) blockers += "NSE_NOT_ENABLED"
+        if (!cashEnabled) blockers += "CASH_SEGMENT_NOT_ENABLED"
+        if (!ddpiEnabled) blockers += "DDPI_NOT_ENABLED"
+
+        GrowwTradingReadiness(
+            generatedAt = now,
+            growwAuthOk = true,
+            staticIpMatches = staticMatches,
+            staticIpConfirmed = staticConfirmed,
+            nseEnabled = nseEnabled,
+            cashSegmentEnabled = cashEnabled,
+            ddpiEnabled = ddpiEnabled,
+            blockers = blockers.distinct(),
+            brokerMessage = profileResult.exceptionOrNull()?.message
+        )
+    }
 
     suspend fun review(call: RecommendationCall): OrderReviewResult = withContext(Dispatchers.IO) {
         val generatedAt = Instant.now().toString()
